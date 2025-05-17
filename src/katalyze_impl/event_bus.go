@@ -29,7 +29,8 @@ type KatalyzeEventBus struct {
 	bootstrapServers string
 	clientID         string
 	producers        utils.TypedSyncMap[string, kTypes.SingleProducer]
-	consumers        utils.TypedSyncMap[string, kTypes.RetryConsumer]
+	// Mapa anidado: messageName -> (action -> consumer)
+	consumers        utils.TypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]]
 	maxRetries       int
 	retryInterval    int
 	ctx              context.Context
@@ -78,7 +79,7 @@ func NewEventBus(config KatalyzeEventBusConfig) (*KatalyzeEventBus, error) {
 		bootstrapServers: config.BootstrapServers,
 		clientID:         config.ClientID,
 		producers:        *utils.NewTypedSyncMap[string, kTypes.SingleProducer](),
-		consumers:        *utils.NewTypedSyncMap[string, kTypes.RetryConsumer](),
+		consumers:        *utils.NewTypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]](),
 		maxRetries:       config.MaxRetries,
 		retryInterval:    config.RetryInterval,
 		ctx:              ctx,
@@ -119,15 +120,25 @@ func (b *KatalyzeEventBus) registerProducerIfNotExists(messageName string) error
 }
 
 func (b *KatalyzeEventBus) registerConsumerIfNotExists(messageName string, action string) error {
-	if _, exists := b.consumers.Load(messageName); exists {
+	// Obtener el mapa interno para este messageName o crear uno nuevo si no existe
+	actionMap, exists := b.consumers.Load(messageName)
+	if !exists {
+		actionMap = utils.NewTypedSyncMap[string, kTypes.RetryConsumer]()
+		b.consumers.Store(messageName, actionMap)
+	}
+
+	// Verificar si ya existe un consumer para esta acción
+	if _, exists := actionMap.Load(action); exists {
 		return nil
 	}
 
+	// Crear un nuevo productor para retry
 	producer, err := producer_helper.CreateRetryProducer(b.bootstrapServers, b.clientID)
 	if err != nil {
 		return err
 	}
 
+	// Crear un nuevo consumer
 	consumerBuilder := consumer_builder.NewRetryConsumerBuilder(b.bootstrapServers, []string{messageName}, action, b.maxRetries)
 	consumerBuilder.SetMaxRetries(b.maxRetries)
 	consumerBuilder.SetProducer(producer)
@@ -136,25 +147,38 @@ func (b *KatalyzeEventBus) registerConsumerIfNotExists(messageName string, actio
 	if err != nil {
 		return err
 	}
+
+	// Registrar el consumer en el cliente
 	if err := b.client.RegisterConsumer(consumer); err != nil {
 		return err
 	}
-	b.consumers.Store(messageName, consumer)
+
+	// Almacenar el consumer en el mapa interno
+	actionMap.Store(action, consumer)
 	return nil
 }
 
 type EventFactory func() types.Event
 
 func (b *KatalyzeEventBus) Subscribe(messageName string, action string, handler types.EventHandler, factory EventFactory) error {
+	// Registrar el consumer si no existe
 	if err := b.registerConsumerIfNotExists(messageName, action); err != nil {
 		return err
 	}
 
-	consumer, ok := b.consumers.Load(messageName)
+	// Obtener el mapa de acciones para este messageName
+	actionMap, ok := b.consumers.Load(messageName)
 	if !ok {
-		return errors.New("consumer no encontrado")
+		return errors.New("mapa de acciones no encontrado para el mensaje")
 	}
 
+	// Obtener el consumer para esta acción específica
+	consumer, ok := actionMap.Load(action)
+	if !ok {
+		return errors.New("consumer no encontrado para la acción")
+	}
+
+	// Suscribir el handler al consumer
 	consumer.Subscribe(func(msg kTypes.Message) error {
 		event := factory()
 		if err := json.Unmarshal(msg.Value(), event); err != nil {
@@ -174,9 +198,20 @@ func (b *KatalyzeEventBus) PreRegisterProducer(messageName string) error {
 }
 
 func (b *KatalyzeEventBus) PreRegisterConsumer(messageName string, action string) error {
-	if _, exists := b.consumers.Load(messageName); exists {
+	// Obtener el mapa de acciones para este messageName
+	actionMap, exists := b.consumers.Load(messageName)
+	if !exists {
+		// Si no existe el mapa para este mensaje, crearlo
+		actionMap = utils.NewTypedSyncMap[string, kTypes.RetryConsumer]()
+		b.consumers.Store(messageName, actionMap)
+	}
+
+	// Verificar si ya existe un consumer para esta acción
+	if _, exists := actionMap.Load(action); exists {
 		return nil
 	}
+
+	// Registrar el consumer
 	return b.registerConsumerIfNotExists(messageName, action)
 }
 
