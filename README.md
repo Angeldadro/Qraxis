@@ -10,8 +10,6 @@
 - ✅ **Arquitectura CQRS completa**: Separación clara de comandos, consultas y eventos
 - ✅ **Implementación Event-Driven**: Sistema de eventos robusto y escalable
 - ✅ **Buses de mensajería**: CommandBus, QueryBus y EventBus con interfaces limpias
-- ✅ **Basado en Kafka**: Aprovecha la potencia de Apache Kafka para mensajería distribuida
-- ✅ **Reintentos automáticos**: Manejo de errores y reintentos incorporados
 - ✅ **Interfaces claras**: API intuitiva y fácil de usar
 - ✅ **Alta cohesión, bajo acoplamiento**: Diseño modular para sistemas escalables
 
@@ -149,43 +147,6 @@ if err := eventBus.Publish(event); err != nil {
     log.Printf("Error al publicar evento: %v", err)
 }
 ```
-
-## 🧰 Arquitectura CQRS
-
-Qraxis implementa el patrón CQRS (Command Query Responsibility Segregation) que separa las operaciones de lectura y escritura:
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│                 │     │                 │     │                 │
-│    Commands     │────▶│  Command Bus    │────▶│ Command Handlers│
-│                 │     │                 │     │                 │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                                                        │
-                                                        │
-                                                        ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│                 │     │                 │     │                 │
-│     Events      │◀────│   Event Bus     │◀────│  Event Sources  │
-│                 │     │                 │     │                 │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-        │
-        │
-        ▼
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│                 │     │                 │     │                 │
-│  Event Handlers │────▶│    Query Bus    │────▶│  Query Results  │
-│                 │     │                 │     │                 │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-```
-
-## 🔄 Sistema de reintentos y manejo de errores
-
-El EventBus de Qraxis incluye un sistema robusto de reintentos:
-
-1. Cuando un evento falla al ser procesado, se envía automáticamente a una cola de reintentos
-2. El sistema reintentará procesar el evento según la configuración (MaxRetries)
-3. Los reintentos ocurren con un intervalo configurable (RetryInterval)
-4. Si todos los reintentos fallan, el evento se envía a una DLQ (Dead Letter Queue)
 
 ## 🤝 Contribuir
 
