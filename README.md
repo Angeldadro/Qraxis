@@ -1,7 +1,7 @@
 # Qraxis
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Go Version](https://img.shields.io/badge/go-%3E%3D%201.18-blue.svg)
+![Go Version](https://img.shields.io/badge/go-%3E%3D%201.24-blue.svg)
 
 **Qraxis** es un framework de mensajería empresarial para Go que implementa patrones CQRS (Command Query Responsibility Segregation) y Event-Driven Architecture. Construido sobre [Katalyze](https://github.com/Angeldadro/Katalyze), proporciona una arquitectura robusta para sistemas distribuidos con buses de comandos, consultas y eventos.
 
