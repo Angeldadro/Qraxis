@@ -1,0 +1,37 @@
+# Binarios compilados
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Archivos de prueba
+*.test
+
+# Output de perfiles de cobertura
+*.out
+*.prof
+
+# Directorio de dependencias
+vendor/
+
+# Go workspace file
+go.work
+
+# Archivos temporales del IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Archivos de log
+*.log
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Directorios de caché
+.cache/
