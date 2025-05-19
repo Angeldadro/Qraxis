@@ -192,13 +192,6 @@ func (b *KatalyzeCommandBus) RegisterHandler(messageName string, handler types.C
 	return nil
 }
 
-func (b *KatalyzeCommandBus) PreRegisterProducer(messageName string) error {
-	if _, exists := b.producers.Load(messageName); exists {
-		return nil
-	}
-	return b.registerProducerIfNotExists(messageName)
-}
-
 func (b *KatalyzeCommandBus) Close() error {
 	b.cancelFunc()
 	b.client.Close()
