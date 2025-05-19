@@ -68,6 +68,12 @@ func (h *UserEventHandler) Handle(event types.Event) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	// Simular un error aleatorio (30% de probabilidad)
+	if time.Now().UnixNano()%10 < 3 { // 30% de probabilidad de error
+		log.Printf("[UserEventHandler] Error simulado al procesar evento para el usuario %s", userEvent.ID)
+		return fmt.Errorf("error simulado al procesar usuario %s", userEvent.ID)
+	}
+
 	// Almacenar el evento procesado
 	h.processedEvents[userEvent.ID] = userEvent
 
@@ -99,6 +105,12 @@ func (h *NotificationEventHandler) Handle(event types.Event) error {
 	userEvent, ok := event.(*UserCreatedEvent)
 	if !ok {
 		return fmt.Errorf("tipo de evento inválido: %T", event)
+	}
+
+	// Simular un error aleatorio (40% de probabilidad)
+	if time.Now().UnixNano()%10 < 4 { // 40% de probabilidad de error
+		log.Printf("[NotificationHandler] Error simulado al enviar notificación para el usuario %s", userEvent.ID)
+		return fmt.Errorf("error simulado al enviar notificación para %s", userEvent.Email)
 	}
 
 	// Simular envío de notificación
