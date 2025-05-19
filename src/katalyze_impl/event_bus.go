@@ -158,9 +158,7 @@ func (b *KatalyzeEventBus) registerConsumerIfNotExists(messageName string, actio
 	return nil
 }
 
-type EventFactory func() types.Event
-
-func (b *KatalyzeEventBus) Subscribe(messageName string, action string, handler types.EventHandler, factory EventFactory) error {
+func (b *KatalyzeEventBus) Subscribe(messageName string, action string, handler types.EventHandler, factory types.EventFactory) error {
 	// Registrar el consumer si no existe
 	if err := b.registerConsumerIfNotExists(messageName, action); err != nil {
 		return err
