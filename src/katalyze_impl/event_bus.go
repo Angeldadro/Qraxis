@@ -30,11 +30,11 @@ type KatalyzeEventBus struct {
 	clientID         string
 	producers        utils.TypedSyncMap[string, kTypes.SingleProducer]
 	// Mapa anidado: messageName -> (action -> consumer)
-	consumers        utils.TypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]]
-	maxRetries       int
-	retryInterval    int
-	ctx              context.Context
-	cancelFunc       context.CancelFunc
+	consumers     utils.TypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]]
+	maxRetries    int
+	retryInterval int
+	ctx           context.Context
+	cancelFunc    context.CancelFunc
 }
 
 // NewEventBus crea una nueva instancia del bus de eventos unificado
@@ -188,31 +188,6 @@ func (b *KatalyzeEventBus) Subscribe(messageName string, action string, handler 
 	})
 
 	return nil
-}
-
-func (b *KatalyzeEventBus) PreRegisterProducer(messageName string) error {
-	if _, exists := b.producers.Load(messageName); exists {
-		return nil
-	}
-	return b.registerProducerIfNotExists(messageName)
-}
-
-func (b *KatalyzeEventBus) PreRegisterConsumer(messageName string, action string) error {
-	// Obtener el mapa de acciones para este messageName
-	actionMap, exists := b.consumers.Load(messageName)
-	if !exists {
-		// Si no existe el mapa para este mensaje, crearlo
-		actionMap = utils.NewTypedSyncMap[string, kTypes.RetryConsumer]()
-		b.consumers.Store(messageName, actionMap)
-	}
-
-	// Verificar si ya existe un consumer para esta acción
-	if _, exists := actionMap.Load(action); exists {
-		return nil
-	}
-
-	// Registrar el consumer
-	return b.registerConsumerIfNotExists(messageName, action)
 }
 
 func (b *KatalyzeEventBus) Close() error {
