@@ -62,10 +62,10 @@ func NewUserCommandHandler() *UserCommandHandler {
 }
 
 // Handle procesa el comando
-func (h *UserCommandHandler) Handle(command types.Command) error {
+func (h *UserCommandHandler) Handle(command types.Command) (types.CommandResult, error) {
 	createUserCmd, ok := command.(*CreateUserCommand)
 	if !ok {
-		return fmt.Errorf("tipo de comando inválido: %T", command)
+		return nil, fmt.Errorf("tipo de comando inválido: %T", command)
 	}
 
 	// Simular procesamiento
@@ -74,10 +74,10 @@ func (h *UserCommandHandler) Handle(command types.Command) error {
 
 	// Almacenar el usuario
 	h.users[createUserCmd.ID] = createUserCmd
-	log.Printf("Usuario creado con ID: %s, Nombre: %s, Email: %s", 
+	log.Printf("Usuario creado con ID: %s, Nombre: %s, Email: %s",
 		createUserCmd.ID, createUserCmd.Name, createUserCmd.Email)
 
-	return nil
+	return nil, nil
 }
 
 // CanHandle verifica si este handler puede procesar el comando dado
@@ -99,11 +99,6 @@ func main() {
 		log.Fatalf("Error al crear el bus de comandos: %v", err)
 	}
 	defer commandBus.Close()
-
-	// Pre-registrar el productor para el comando
-	if err := commandBus.PreRegisterProducer("user.create"); err != nil {
-		log.Fatalf("Error al pre-registrar el productor: %v", err)
-	}
 
 	// Crear e inicializar el handler
 	userCommandHandler := NewUserCommandHandler()
@@ -168,7 +163,7 @@ func main() {
 	}()
 
 	log.Println("Aplicación iniciada. Presione Ctrl+C para salir...")
-	
+
 	// Esperar señal de terminación
 	<-sigs
 	log.Println("Señal de terminación recibida, cerrando aplicación...")

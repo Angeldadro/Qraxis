@@ -3,13 +3,11 @@ package types
 type Command interface {
 	Message
 }
+type CommandResult interface{}
 
 type CommandHandler interface {
-	Handle(command Command) error
+	Handle(command Command) (CommandResult, error)
 	CanHandle(command Command) bool
-}
-type CommandResult interface {
-	Message
 }
 
 type CommandFactory func() Command

@@ -126,11 +126,6 @@ func main() {
 	}
 	defer queryBus.Close()
 
-	// Pre-registrar el productor para la consulta
-	if err := queryBus.PreRegisterProducer("user.query"); err != nil {
-		log.Fatalf("Error al pre-registrar el productor: %v", err)
-	}
-
 	// Crear e inicializar el handler
 	userQueryHandler := NewUserQueryHandler()
 
@@ -200,7 +195,7 @@ func main() {
 	}()
 
 	log.Println("Aplicación iniciada. Presione Ctrl+C para salir...")
-	
+
 	// Esperar señal de terminación
 	<-sigs
 	log.Println("Señal de terminación recibida, cerrando aplicación...")

@@ -185,8 +185,7 @@ func (b *KatalyzeCommandBus) RegisterHandler(messageName string, handler types.C
 		if err := json.Unmarshal(message.Value(), command); err != nil {
 			return nil, err
 		}
-		err := handler.Handle(command)
-		return nil, err
+		return handler.Handle(command)
 	}
 	consumer.Subscribe(responseFunc)
 	return nil

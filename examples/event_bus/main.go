@@ -142,11 +142,6 @@ func main() {
 	}
 	defer eventBus.Close()
 
-	// Pre-registrar el productor para el evento
-	if err := eventBus.PreRegisterProducer("user.created"); err != nil {
-		log.Fatalf("Error al pre-registrar el productor: %v", err)
-	}
-
 	// Crear e inicializar los handlers de eventos
 	userEventHandler := NewUserEventHandler()
 	notificationHandler := NewNotificationEventHandler()
