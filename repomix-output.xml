@@ -1,0 +1,1592 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+examples/command_bus/main.go
+examples/event_bus/main.go
+examples/query_bus/main.go
+go.mod
+README.md
+src/katalyze_impl/command_bus.go
+src/katalyze_impl/event_bus.go
+src/katalyze_impl/query_bus.go
+src/types/command.go
+src/types/event.go
+src/types/message.go
+src/types/query.go
+src/utils/typed_map.go
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".gitignore">
+# Binarios compilados
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Archivos de prueba
+*.test
+
+# Output de perfiles de cobertura
+*.out
+*.prof
+
+# Directorio de dependencias
+vendor/
+
+# Go workspace file
+go.work
+
+# Archivos temporales del IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Archivos de log
+*.log
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Directorios de caché
+.cache/
+</file>
+
+<file path="src/types/message.go">
+package types
+
+type MessageType string
+
+const (
+	CommandMessageType MessageType = "command"
+	QueryMessageType   MessageType = "query"
+	EventMessageType   MessageType = "event"
+)
+
+type Message interface {
+	MessageName() string
+	Type() MessageType
+	Payload() interface{}
+	Validate() error
+}
+</file>
+
+<file path="src/types/query.go">
+package types
+
+type Query interface {
+	Message
+}
+
+type QueryResult interface{}
+
+type QueryHandler interface {
+	Handle(query Query) (QueryResult, error)
+	CanHandle(query Query) bool
+}
+
+type QueryFactory func() Query
+
+type QueryBus interface {
+	Dispatch(query Query, timeoutMs int) (QueryResult, error)
+	RegisterHandler(messageName string, handler QueryHandler, factory QueryFactory) error
+	Close() error
+}
+</file>
+
+<file path="src/utils/typed_map.go">
+package utils
+
+import "sync"
+
+// TypedSyncMap es un wrapper genérico sobre sync.Map para tipado fuerte y autocompletado
+type TypedSyncMap[K comparable, V any] struct {
+	m sync.Map
+}
+
+func NewTypedSyncMap[K comparable, V any]() *TypedSyncMap[K, V] {
+	return &TypedSyncMap[K, V]{m: sync.Map{}}
+}
+
+func (t *TypedSyncMap[K, V]) Store(key K, value V) {
+	t.m.Store(key, value)
+}
+
+func (t *TypedSyncMap[K, V]) Load(key K) (V, bool) {
+	val, ok := t.m.Load(key)
+	if !ok {
+		var zero V
+		return zero, false
+	}
+	v, ok := val.(V)
+	return v, ok
+}
+
+func (t *TypedSyncMap[K, V]) Delete(key K) {
+	t.m.Delete(key)
+}
+
+func (t *TypedSyncMap[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
+	actualVal, loaded := t.m.LoadOrStore(key, value)
+	actual, _ = actualVal.(V)
+	return actual, loaded
+}
+
+func (t *TypedSyncMap[K, V]) Range(f func(key K, value V) bool) {
+	t.m.Range(func(k, v any) bool {
+		key, ok1 := k.(K)
+		val, ok2 := v.(V)
+		if !ok1 || !ok2 {
+			return true // salta claves/valores de tipo incorrecto
+		}
+		return f(key, val)
+	})
+}
+</file>
+
+<file path="examples/command_bus/main.go">
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/Angeldadro/Qraxis/src/katalyze_impl"
+	"github.com/Angeldadro/Qraxis/src/types"
+)
+
+// CreateUserCommand es un comando para crear un usuario
+type CreateUserCommand struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+// MessageName devuelve el nombre del mensaje para enrutamiento
+func (c *CreateUserCommand) MessageName() string {
+	return "user.create"
+}
+
+// Type devuelve el tipo de mensaje
+func (c *CreateUserCommand) Type() types.MessageType {
+	return types.CommandMessageType
+}
+
+// Payload devuelve el contenido del mensaje
+func (c *CreateUserCommand) Payload() interface{} {
+	return c
+}
+
+// Validate asegura que el comando es válido
+func (c *CreateUserCommand) Validate() error {
+	if c.ID == "" {
+		return fmt.Errorf("ID no puede estar vacío")
+	}
+	if c.Name == "" {
+		return fmt.Errorf("Name no puede estar vacío")
+	}
+	if c.Email == "" {
+		return fmt.Errorf("Email no puede estar vacío")
+	}
+	return nil
+}
+
+// UserCommandHandler maneja comandos relacionados con usuarios
+type UserCommandHandler struct {
+	// Simulación de almacenamiento de usuarios
+	users map[string]*CreateUserCommand
+}
+
+// NewUserCommandHandler crea un nuevo manejador de comandos de usuarios
+func NewUserCommandHandler() *UserCommandHandler {
+	return &UserCommandHandler{
+		users: make(map[string]*CreateUserCommand),
+	}
+}
+
+// Handle procesa el comando
+func (h *UserCommandHandler) Handle(command types.Command) (types.CommandResult, error) {
+	createUserCmd, ok := command.(*CreateUserCommand)
+	if !ok {
+		return nil, fmt.Errorf("tipo de comando inválido: %T", command)
+	}
+
+	// Simular procesamiento
+	log.Printf("Procesando comando para crear usuario: %s", createUserCmd.Name)
+	time.Sleep(100 * time.Millisecond)
+
+	// Almacenar el usuario
+	h.users[createUserCmd.ID] = createUserCmd
+	log.Printf("Usuario creado con ID: %s, Nombre: %s, Email: %s",
+		createUserCmd.ID, createUserCmd.Name, createUserCmd.Email)
+
+	return nil, nil
+}
+
+// CanHandle verifica si este handler puede procesar el comando dado
+func (h *UserCommandHandler) CanHandle(command types.Command) bool {
+	_, ok := command.(*CreateUserCommand)
+	return ok
+}
+
+func main() {
+	// Configurar el bus de comandos
+	config := katalyze_impl.KatalyzeCommandBusConfig{
+		BootstrapServers: "localhost:9092",
+		ClientID:         "qraxis-command-example",
+	}
+
+	// Crear el bus de comandos
+	commandBus, err := katalyze_impl.NewCommandBus(config)
+	if err != nil {
+		log.Fatalf("Error al crear el bus de comandos: %v", err)
+	}
+	defer commandBus.Close()
+
+	// Crear e inicializar el handler
+	userCommandHandler := NewUserCommandHandler()
+
+	// Registrar el handler en el bus
+	err = commandBus.RegisterHandler("user.create", userCommandHandler, func() types.Command {
+		return &CreateUserCommand{}
+	})
+	if err != nil {
+		log.Fatalf("Error al registrar el handler: %v", err)
+	}
+
+	// Configurar manejo de señales para terminar limpiamente
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	// Iniciar una goroutine para enviar comandos periódicamente
+	go func() {
+		// Esperar un poco para que los componentes se inicialicen
+		time.Sleep(3 * time.Second)
+		log.Println("Iniciando envío de comandos...")
+
+		// Enviar comandos cada 5 segundos
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		// Datos de ejemplo para crear usuarios
+		users := []struct {
+			id    string
+			name  string
+			email string
+		}{
+			{"1", "Juan Pérez", "juan@ejemplo.com"},
+			{"2", "María García", "maria@ejemplo.com"},
+			{"3", "Carlos López", "carlos@ejemplo.com"},
+		}
+		index := 0
+
+		for {
+			select {
+			case <-sigs:
+				return
+			case <-ticker.C:
+				// Crear un comando
+				user := users[index%len(users)]
+				index++
+
+				command := &CreateUserCommand{
+					ID:    user.id,
+					Name:  user.name,
+					Email: user.email,
+				}
+
+				log.Printf("Enviando comando para crear usuario: %s", user.name)
+
+				// Despachar el comando
+				if err := commandBus.Dispatch(command); err != nil {
+					log.Printf("Error al despachar comando: %v", err)
+				}
+			}
+		}
+	}()
+
+	log.Println("Aplicación iniciada. Presione Ctrl+C para salir...")
+
+	// Esperar señal de terminación
+	<-sigs
+	log.Println("Señal de terminación recibida, cerrando aplicación...")
+}
+</file>
+
+<file path="examples/query_bus/main.go">
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/Angeldadro/Qraxis/src/katalyze_impl"
+	"github.com/Angeldadro/Qraxis/src/types"
+)
+
+// UserQuery es una consulta para obtener información de un usuario
+type UserQuery struct {
+	ID string `json:"id"`
+}
+
+// MessageName devuelve el nombre del mensaje para enrutamiento
+func (q *UserQuery) MessageName() string {
+	return "user.query"
+}
+
+// Type devuelve el tipo de mensaje
+func (q *UserQuery) Type() types.MessageType {
+	return types.QueryMessageType
+}
+
+// Payload devuelve el contenido del mensaje
+func (q *UserQuery) Payload() interface{} {
+	return q
+}
+
+// Validate asegura que la consulta es válida
+func (q *UserQuery) Validate() error {
+	if q.ID == "" {
+		return fmt.Errorf("ID no puede estar vacío")
+	}
+	return nil
+}
+
+// UserResponse es la respuesta a UserQuery
+type UserResponse struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Email     string `json:"email"`
+	CreatedAt string `json:"created_at"`
+}
+
+// UserQueryHandler maneja consultas de tipo UserQuery
+type UserQueryHandler struct {
+	// Simulación de una base de datos de usuarios
+	users map[string]*UserResponse
+	mu    sync.RWMutex
+}
+
+// NewUserQueryHandler crea un nuevo manejador de consultas de usuarios
+func NewUserQueryHandler() *UserQueryHandler {
+	// Crear algunos usuarios de ejemplo
+	return &UserQueryHandler{
+		users: map[string]*UserResponse{
+			"1": {
+				ID:        "1",
+				Name:      "Juan Pérez",
+				Email:     "juan@ejemplo.com",
+				CreatedAt: time.Now().Format(time.RFC3339),
+			},
+			"2": {
+				ID:        "2",
+				Name:      "María García",
+				Email:     "maria@ejemplo.com",
+				CreatedAt: time.Now().Format(time.RFC3339),
+			},
+			"3": {
+				ID:        "3",
+				Name:      "Carlos López",
+				Email:     "carlos@ejemplo.com",
+				CreatedAt: time.Now().Format(time.RFC3339),
+			},
+		},
+	}
+}
+
+// Handle procesa la consulta y devuelve el resultado
+func (h *UserQueryHandler) Handle(query types.Query) (types.QueryResult, error) {
+	userQuery, ok := query.(*UserQuery)
+	if !ok {
+		return nil, fmt.Errorf("tipo de consulta inválido: %T", query)
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	user, exists := h.users[userQuery.ID]
+	if !exists {
+		return nil, fmt.Errorf("usuario con ID %s no encontrado", userQuery.ID)
+	}
+
+	// Simular algún procesamiento
+	log.Printf("Procesando consulta para usuario: %s", userQuery.ID)
+	time.Sleep(100 * time.Millisecond)
+
+	return user, nil
+}
+
+// CanHandle verifica si este handler puede procesar la consulta dada
+func (h *UserQueryHandler) CanHandle(query types.Query) bool {
+	_, ok := query.(*UserQuery)
+	return ok
+}
+
+func main() {
+	// Configurar el bus de consultas
+	config := katalyze_impl.KatalyzeQueryBusConfig{
+		BootstrapServers: "localhost:9092",
+		ClientID:         "qraxis-query-example",
+	}
+
+	// Crear el bus de consultas
+	queryBus, err := katalyze_impl.NewQueryBus(config)
+	if err != nil {
+		log.Fatalf("Error al crear el bus de consultas: %v", err)
+	}
+	defer queryBus.Close()
+
+	// Crear e inicializar el handler
+	userQueryHandler := NewUserQueryHandler()
+
+	// Registrar el handler en el bus
+	err = queryBus.RegisterHandler("user.query", userQueryHandler, func() types.Query {
+		return &UserQuery{}
+	})
+	if err != nil {
+		log.Fatalf("Error al registrar el handler: %v", err)
+	}
+
+	// Configurar manejo de señales para terminar limpiamente
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	// Iniciar una goroutine para enviar consultas periódicamente
+	go func() {
+		// Esperar un poco para que los componentes se inicialicen
+		time.Sleep(3 * time.Second)
+		log.Println("Iniciando envío de consultas...")
+
+		// Enviar consultas cada 5 segundos
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		// Alternar entre consultar usuarios
+		userIDs := []string{"1", "2", "3"}
+		index := 0
+
+		for {
+			select {
+			case <-sigs:
+				return
+			case <-ticker.C:
+				// Crear una consulta
+				userID := userIDs[index%len(userIDs)]
+				index++
+
+				query := &UserQuery{ID: userID}
+
+				log.Printf("Enviando consulta para usuario ID: %s", userID)
+
+				// Despachar la consulta
+				result, err := queryBus.Dispatch(query, 5000)
+				if err != nil {
+					log.Printf("Error al despachar consulta: %v", err)
+					continue
+				}
+
+				// Remarshalizar para mostrar el resultado
+				resultBytes, err := json.Marshal(result)
+				if err != nil {
+					log.Printf("Error al serializar resultado: %v", err)
+					continue
+				}
+				var userResponse UserResponse
+				if err := json.Unmarshal(resultBytes, &userResponse); err != nil {
+					log.Printf("Error al deserializar resultado: %v", err)
+					continue
+				}
+
+				// Mostrar el resultado
+				log.Printf("Respuesta recibida para usuario %s: Nombre: %s, Email: %s, Creado: %s",
+					userResponse.ID, userResponse.Name, userResponse.Email, userResponse.CreatedAt)
+			}
+		}
+	}()
+
+	log.Println("Aplicación iniciada. Presione Ctrl+C para salir...")
+
+	// Esperar señal de terminación
+	<-sigs
+	log.Println("Señal de terminación recibida, cerrando aplicación...")
+}
+</file>
+
+<file path="src/katalyze_impl/query_bus.go">
+package katalyze_impl
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	admin_builder "github.com/Angeldadro/Katalyze/src/builders/admin"
+	client_builder "github.com/Angeldadro/Katalyze/src/builders/client"
+	consumer_builder "github.com/Angeldadro/Katalyze/src/builders/consumer"
+	producer_builder "github.com/Angeldadro/Katalyze/src/builders/producer"
+	"github.com/Angeldadro/Katalyze/src/client"
+	producer_helper "github.com/Angeldadro/Katalyze/src/helpers/producer"
+	kTypes "github.com/Angeldadro/Katalyze/src/types"
+	"github.com/Angeldadro/Qraxis/src/types"
+	"github.com/Angeldadro/Qraxis/src/utils"
+)
+
+type KatalyzeQueryBusConfig struct {
+	BootstrapServers  string
+	ClientID          string
+	ResponseTimeoutMs int
+}
+
+// KatalyzeQueryBus implementa un único QueryBus que maneja todas las consultas
+type KatalyzeQueryBus struct {
+	client           *client.Client
+	bootstrapServers string
+	producers        utils.TypedSyncMap[string, kTypes.ResponseProducer]
+	consumers        utils.TypedSyncMap[string, kTypes.ResponseConsumer]
+	ctx              context.Context
+	cancelFunc       context.CancelFunc
+}
+
+// NewQueryBus crea una nueva instancia del bus de consultas unificado
+func NewQueryBus(config KatalyzeQueryBusConfig) (*KatalyzeQueryBus, error) {
+	if config.BootstrapServers == "" {
+		return nil, errors.New("se requieren servidores bootstrap")
+	}
+
+	if config.ClientID == "" {
+		return nil, errors.New("se requiere un ID de cliente")
+	}
+
+	if config.ResponseTimeoutMs <= 0 {
+		config.ResponseTimeoutMs = 5000 // Timeout predeterminado: 5 segundos
+	}
+
+	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
+		SetClientId(config.ClientID).
+		Build()
+
+	if err != nil {
+		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
+	}
+
+	client, err := client_builder.NewClientBuilder().
+		SetClientId(config.ClientID).
+		SetAdminClient(adminClient).
+		Build()
+
+	if err != nil {
+		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
+	}
+
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	return &KatalyzeQueryBus{
+		client:           client,
+		bootstrapServers: config.BootstrapServers,
+		producers:        *utils.NewTypedSyncMap[string, kTypes.ResponseProducer](),
+		consumers:        *utils.NewTypedSyncMap[string, kTypes.ResponseConsumer](),
+		ctx:              ctx,
+		cancelFunc:       cancelFunc,
+	}, nil
+}
+
+func (b *KatalyzeQueryBus) Dispatch(query types.Query, timeoutMs int) (types.QueryResult, error) {
+	if err := b.registerProducerIfNotExists(query.MessageName()); err != nil {
+		return nil, err
+	}
+
+	// Obtener el productor
+	producer, ok := b.producers.Load(query.MessageName())
+	if !ok {
+		return nil, errors.New("producer no encontrado")
+	}
+
+	// Serializar la consulta a JSON
+	marshaledQuery, err := json.Marshal(query)
+	if err != nil {
+		return nil, fmt.Errorf("error de serialización: %w", err)
+	}
+	res, err := producer.Produce(query.MessageName(), []byte(""), marshaledQuery, timeoutMs)
+	if err != nil {
+		return nil, fmt.Errorf("error al producir consulta: %w", err)
+	}
+	var remarshaledQuery types.QueryResult
+	if err := json.Unmarshal(res, &remarshaledQuery); err != nil {
+		return nil, fmt.Errorf("error al deserializar consulta: %w", err)
+	}
+
+	return remarshaledQuery, nil
+}
+
+func (b *KatalyzeQueryBus) registerProducerIfNotExists(messageName string) error {
+	if _, exists := b.producers.Load(messageName); exists {
+		return nil
+	}
+	producer, err := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName).
+		Build()
+	if err != nil {
+		return err
+	}
+	if err := b.client.RegisterResponseProducer(producer); err != nil {
+		return err
+	}
+	b.producers.Store(messageName, producer)
+	return nil
+}
+
+func (b *KatalyzeQueryBus) registerConsumerIfNotExists(messageName string) error {
+	if _, exists := b.consumers.Load(messageName); exists {
+		return nil
+	}
+	producer, err := producer_helper.CreateProducer(b.bootstrapServers, messageName)
+	if err != nil {
+		return err
+	}
+	consumer, err := consumer_builder.NewResponseConsumerBuilder(b.bootstrapServers, []string{messageName}).SetResponseProducer(producer).Build()
+	if err != nil {
+		return err
+	}
+	if err := b.client.RegisterConsumer(consumer); err != nil {
+		return err
+	}
+	b.consumers.Store(messageName, consumer)
+	return nil
+}
+
+func (b *KatalyzeQueryBus) RegisterHandler(messageName string, handler types.QueryHandler, factory types.QueryFactory) error {
+	if err := b.registerConsumerIfNotExists(messageName); err != nil {
+		return err
+	}
+	consumer, ok := b.consumers.Load(messageName)
+	if !ok {
+		return errors.New("consumer no encontrado")
+	}
+	var responseFunc kTypes.ResponseHandler = func(message kTypes.Message) (interface{}, error) {
+		query := factory()
+		if err := json.Unmarshal(message.Value(), query); err != nil {
+			return nil, err
+		}
+		return handler.Handle(query)
+	}
+	consumer.Subscribe(responseFunc)
+	return nil
+}
+
+func (b *KatalyzeQueryBus) Close() error {
+	b.cancelFunc()
+	b.client.Close()
+	return nil
+}
+</file>
+
+<file path="src/types/event.go">
+package types
+
+type Event interface {
+	Message
+}
+
+type EventHandler interface {
+	Handle(event Event) error
+	CanHandle(event Event) bool
+}
+type EventFactory func() Event
+type EventBus interface {
+	Publish(event Event) error
+	Subscribe(messageName string, action string, handler EventHandler, factory EventFactory) error
+	Close() error
+}
+</file>
+
+<file path="examples/event_bus/main.go">
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"github.com/Angeldadro/Qraxis/src/katalyze_impl"
+	"github.com/Angeldadro/Qraxis/src/types"
+)
+
+// UserCreatedEvent es un evento que se emite cuando se crea un usuario
+type UserCreatedEvent struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Email     string    `json:"email"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// MessageName devuelve el nombre del mensaje para enrutamiento
+func (e *UserCreatedEvent) MessageName() string {
+	return "user.created"
+}
+
+// Type devuelve el tipo de mensaje
+func (e *UserCreatedEvent) Type() types.MessageType {
+	return types.EventMessageType
+}
+
+// Payload devuelve el contenido del mensaje
+func (e *UserCreatedEvent) Payload() interface{} {
+	return e
+}
+
+// Validate asegura que el evento es válido
+func (e *UserCreatedEvent) Validate() error {
+	if e.ID == "" {
+		return fmt.Errorf("ID no puede estar vacío")
+	}
+	return nil
+}
+
+// UserEventHandler maneja eventos relacionados con usuarios
+type UserEventHandler struct {
+	// Almacenamiento de eventos procesados
+	processedEvents map[string]*UserCreatedEvent
+	mu              sync.RWMutex
+}
+
+// NewUserEventHandler crea un nuevo manejador de eventos de usuarios
+func NewUserEventHandler() *UserEventHandler {
+	return &UserEventHandler{
+		processedEvents: make(map[string]*UserCreatedEvent),
+	}
+}
+
+// Handle procesa el evento
+func (h *UserEventHandler) Handle(event types.Event) error {
+	userEvent, ok := event.(*UserCreatedEvent)
+	if !ok {
+		return fmt.Errorf("tipo de evento inválido: %T", event)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Simular un error aleatorio (30% de probabilidad)
+	if time.Now().UnixNano()%10 < 3 { // 30% de probabilidad de error
+		log.Printf("[UserEventHandler] Error simulado al procesar evento para el usuario %s", userEvent.ID)
+		return fmt.Errorf("error simulado al procesar usuario %s", userEvent.ID)
+	}
+
+	// Almacenar el evento procesado
+	h.processedEvents[userEvent.ID] = userEvent
+
+	// Mostrar información del evento procesado
+	log.Printf("[UserEventHandler] Evento procesado - Usuario creado: %s, Email: %s, Creado: %s",
+		userEvent.Name,
+		userEvent.Email,
+		userEvent.CreatedAt.Format(time.RFC3339))
+
+	return nil
+}
+
+// CanHandle verifica si este handler puede procesar el evento dado
+func (h *UserEventHandler) CanHandle(event types.Event) bool {
+	_, ok := event.(*UserCreatedEvent)
+	return ok
+}
+
+// NotificationEventHandler es un segundo manejador que envía notificaciones
+type NotificationEventHandler struct{}
+
+// NewNotificationEventHandler crea un nuevo manejador de notificaciones
+func NewNotificationEventHandler() *NotificationEventHandler {
+	return &NotificationEventHandler{}
+}
+
+// Handle procesa el evento enviando una notificación
+func (h *NotificationEventHandler) Handle(event types.Event) error {
+	userEvent, ok := event.(*UserCreatedEvent)
+	if !ok {
+		return fmt.Errorf("tipo de evento inválido: %T", event)
+	}
+
+	// Simular un error aleatorio (40% de probabilidad)
+	if time.Now().UnixNano()%10 < 4 { // 40% de probabilidad de error
+		log.Printf("[NotificationHandler] Error simulado al enviar notificación para el usuario %s", userEvent.ID)
+		return fmt.Errorf("error simulado al enviar notificación para %s", userEvent.Email)
+	}
+
+	// Simular envío de notificación
+	log.Printf("[NotificationHandler] Notificación enviada - Bienvenido %s! Tu cuenta ha sido creada con éxito.",
+		userEvent.Name)
+
+	return nil
+}
+
+// CanHandle verifica si este handler puede procesar el evento dado
+func (h *NotificationEventHandler) CanHandle(event types.Event) bool {
+	_, ok := event.(*UserCreatedEvent)
+	return ok
+}
+
+func main() {
+	// Configurar el bus de eventos
+	config := katalyze_impl.KatalyzeEventBusConfig{
+		BootstrapServers: "localhost:9092",
+		ClientID:         "qraxis-event-example",
+		MaxRetries:       3,
+		RetryInterval:    5000,
+	}
+
+	// Crear el bus de eventos
+	eventBus, err := katalyze_impl.NewEventBus(config)
+	if err != nil {
+		log.Fatalf("Error al crear el bus de eventos: %v", err)
+	}
+	defer eventBus.Close()
+
+	// Crear e inicializar los handlers de eventos
+	userEventHandler := NewUserEventHandler()
+	notificationHandler := NewNotificationEventHandler()
+
+	// Registrar los handlers en el bus de eventos
+	log.Println("Registrando manejador de eventos de usuarios...")
+	err = eventBus.Subscribe("user.created", "process-user-created", userEventHandler, func() types.Event {
+		return &UserCreatedEvent{}
+	})
+	if err != nil {
+		log.Fatalf("Error al suscribir el handler de usuarios: %v", err)
+	}
+
+	log.Println("Registrando manejador de notificaciones...")
+	err = eventBus.Subscribe("user.created", "send-welcome-notification", notificationHandler, func() types.Event {
+		return &UserCreatedEvent{}
+	})
+	if err != nil {
+		log.Fatalf("Error al suscribir el handler de notificaciones: %v", err)
+	}
+
+	log.Println("Ambos manejadores registrados correctamente")
+
+	// Configurar manejo de señales para terminar limpiamente
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
+	// Iniciar una goroutine para publicar eventos periódicamente
+	go func() {
+		// Esperar un poco para que los componentes se inicialicen
+		time.Sleep(3 * time.Second)
+		log.Println("Iniciando publicación de eventos...")
+		log.Println("Los eventos serán procesados por ambos manejadores: UserEventHandler y NotificationEventHandler")
+
+		// Enviar eventos cada 5 segundos
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		// Datos de ejemplo para usuarios
+		users := []struct {
+			id    string
+			name  string
+			email string
+		}{
+			{"101", "Juan Pérez", "juan@ejemplo.com"},
+			{"102", "María García", "maria@ejemplo.com"},
+			{"103", "Carlos López", "carlos@ejemplo.com"},
+			{"104", "Ana Martínez", "ana@ejemplo.com"},
+		}
+		index := 0
+
+		for {
+			select {
+			case <-sigs:
+				return
+			case <-ticker.C:
+				// Crear un evento
+				user := users[index%len(users)]
+				index++
+
+				event := &UserCreatedEvent{
+					ID:        user.id,
+					Name:      user.name,
+					Email:     user.email,
+					CreatedAt: time.Now(),
+				}
+
+				log.Printf("Publicando evento de usuario creado - ID: %s, Nombre: %s",
+					user.id, user.name)
+
+				// Publicar el evento
+				if err := eventBus.Publish(event); err != nil {
+					log.Printf("Error al publicar evento: %v", err)
+				}
+			}
+		}
+	}()
+
+	log.Println("Aplicación iniciada. Presione Ctrl+C para salir...")
+
+	// Esperar señal de terminación
+	<-sigs
+	log.Println("Señal de terminación recibida, cerrando aplicación...")
+}
+</file>
+
+<file path="go.mod">
+module github.com/Angeldadro/Qraxis
+
+go 1.24.2
+
+require github.com/Angeldadro/Katalyze v1.5.0
+
+require (
+	github.com/confluentinc/confluent-kafka-go/v2 v2.10.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+)
+</file>
+
+<file path="README.md">
+# Qraxis
+
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Go Version](https://img.shields.io/badge/go-%3E%3D%201.24-blue.svg)
+
+**Qraxis** es un framework de mensajería empresarial para Go que implementa patrones CQRS (Command Query Responsibility Segregation) y Event-Driven Architecture. Construido sobre [Katalyze](https://github.com/Angeldadro/Katalyze), proporciona una arquitectura robusta para sistemas distribuidos con buses de comandos, consultas y eventos.
+
+## 🚀 Características principales
+
+- ✅ **Arquitectura CQRS completa**: Separación clara de comandos, consultas y eventos
+- ✅ **Implementación Event-Driven**: Sistema de eventos robusto y escalable
+- ✅ **Buses de mensajería**: CommandBus, QueryBus y EventBus con interfaces limpias
+- ✅ **Interfaces claras**: API intuitiva y fácil de usar
+- ✅ **Alta cohesión, bajo acoplamiento**: Diseño modular para sistemas escalables
+
+## 📦 Instalación
+
+```bash
+go get github.com/Angeldadro/Qraxis
+```
+
+## 🧩 Componentes principales
+
+### Command Bus
+
+El Command Bus permite enviar comandos (acciones que modifican el estado del sistema) a sus manejadores correspondientes:
+
+- **Dispatch**: Envía comandos a sus manejadores
+- **RegisterHandler**: Registra manejadores para tipos específicos de comandos
+- **PreRegisterProducer**: Pre-registra productores para mejorar el rendimiento
+
+### Query Bus
+
+El Query Bus facilita la comunicación de consultas (solicitudes de información que no modifican el estado):
+
+- **Dispatch**: Envía consultas y espera resultados
+- **RegisterHandler**: Registra manejadores para tipos específicos de consultas
+- **PreRegisterProducer**: Pre-registra productores para mejorar el rendimiento
+
+### Event Bus
+
+El Event Bus implementa el patrón publicador/suscriptor para eventos del sistema:
+
+- **Publish**: Publica eventos en el bus
+- **Subscribe**: Suscribe manejadores a tipos específicos de eventos
+- **PreRegisterProducer/Consumer**: Pre-registra productores y consumidores
+
+## 🔰 Ejemplos de uso
+
+### Implementación de Command Bus
+
+```go
+// Configurar el bus de comandos
+config := katalyze_impl.KatalyzeCommandBusConfig{
+    BootstrapServers: "localhost:9092",
+    ClientID:         "qraxis-command-example",
+}
+
+// Crear el bus de comandos
+commandBus, err := katalyze_impl.NewCommandBus(config)
+if err != nil {
+    log.Fatalf("Error al crear el bus de comandos: %v", err)
+}
+defer commandBus.Close()
+
+// Pre-registrar el productor para el comando
+commandBus.PreRegisterProducer("user.command")
+
+// Registrar un manejador de comandos
+commandBus.RegisterHandler("user.command", userCommandHandler, func() types.Command {
+    return &UserCommand{}
+})
+
+// Enviar un comando
+command := &UserCommand{ID: "1", Action: "create"}
+if err := commandBus.Dispatch(command); err != nil {
+    log.Printf("Error al despachar comando: %v", err)
+}
+```
+
+### Implementación de Query Bus
+
+```go
+// Configurar el bus de consultas
+config := katalyze_impl.KatalyzeQueryBusConfig{
+    BootstrapServers: "localhost:9092",
+    ClientID:         "qraxis-query-example",
+}
+
+// Crear el bus de consultas
+queryBus, err := katalyze_impl.NewQueryBus(config)
+if err != nil {
+    log.Fatalf("Error al crear el bus de consultas: %v", err)
+}
+defer queryBus.Close()
+
+// Pre-registrar el productor para la consulta
+queryBus.PreRegisterProducer("user.query")
+
+// Registrar un manejador de consultas
+queryBus.RegisterHandler("user.query", userQueryHandler, func() types.Query {
+    return &UserQuery{}
+})
+
+// Enviar una consulta y obtener resultado
+query := &UserQuery{ID: "1"}
+result, err := queryBus.Dispatch(query, 5000)
+if err != nil {
+    log.Printf("Error al despachar consulta: %v", err)
+}
+```
+
+### Implementación de Event Bus
+
+```go
+// Configurar el bus de eventos
+config := katalyze_impl.KatalyzeEventBusConfig{
+    BootstrapServers: "localhost:9092",
+    ClientID:         "qraxis-event-example",
+    MaxRetries:       3,
+    RetryInterval:    5000,
+}
+
+// Crear el bus de eventos
+eventBus, err := katalyze_impl.NewEventBus(config)
+if err != nil {
+    log.Fatalf("Error al crear el bus de eventos: %v", err)
+}
+defer eventBus.Close()
+
+// Pre-registrar el productor para el evento
+eventBus.PreRegisterProducer("user.event")
+
+// Registrar un manejador de eventos
+eventBus.Subscribe("user.event", "process-user-event", userEventHandler, func() types.Event {
+    return &UserEvent{}
+})
+
+// Publicar un evento
+event := &UserEvent{
+    ID:        "1",
+    Name:      "Juan Pérez",
+    Email:     "juan@ejemplo.com",
+    CreatedAt: time.Now(),
+}
+if err := eventBus.Publish(event); err != nil {
+    log.Printf("Error al publicar evento: %v", err)
+}
+```
+
+## 🤝 Contribuir
+
+Las contribuciones son bienvenidas. Puedes:
+
+1. Reportar bugs o solicitar características a través de issues
+2. Enviar Pull Requests con mejoras
+3. Mejorar la documentación
+4. Compartir ejemplos de uso
+
+## 📜 Licencia
+
+Este proyecto está licenciado bajo la Licencia MIT - ver el archivo LICENSE para más detalles.
+
+---
+
+Desarrollado con ❤️ por [@Angeldadro](https://github.com/Angeldadro)
+</file>
+
+<file path="src/katalyze_impl/command_bus.go">
+package katalyze_impl
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	admin_builder "github.com/Angeldadro/Katalyze/src/builders/admin"
+	client_builder "github.com/Angeldadro/Katalyze/src/builders/client"
+	consumer_builder "github.com/Angeldadro/Katalyze/src/builders/consumer"
+	producer_builder "github.com/Angeldadro/Katalyze/src/builders/producer"
+	"github.com/Angeldadro/Katalyze/src/client"
+	producer_helper "github.com/Angeldadro/Katalyze/src/helpers/producer"
+	kTypes "github.com/Angeldadro/Katalyze/src/types"
+	"github.com/Angeldadro/Qraxis/src/types"
+	"github.com/Angeldadro/Qraxis/src/utils"
+)
+
+// GenericCommand es una implementación genérica de Command para casos donde solo necesitamos el nombre del mensaje
+type GenericCommand struct {
+	messageName string
+	data        map[string]interface{}
+}
+
+func (c *GenericCommand) MessageName() string {
+	return c.messageName
+}
+
+func (c *GenericCommand) Type() types.MessageType {
+	return types.CommandMessageType
+}
+
+func (c *GenericCommand) Payload() interface{} {
+	return c.data
+}
+
+func (c *GenericCommand) Validate() error {
+	return nil // Implementación simple que siempre valida
+}
+
+// NewGenericCommand crea una nueva instancia de GenericCommand
+func NewGenericCommand(messageName string, data map[string]interface{}) *GenericCommand {
+	return &GenericCommand{
+		messageName: messageName,
+		data:        data,
+	}
+}
+
+type KatalyzeCommandBusConfig struct {
+	BootstrapServers  string
+	ClientID          string
+	ResponseTimeoutMs int
+}
+
+// KatalyzeCommandBus implementa un único CommandBus que maneja todos los comandos
+type KatalyzeCommandBus struct {
+	client           *client.Client
+	bootstrapServers string
+	producers        utils.TypedSyncMap[string, kTypes.ResponseProducer]
+	consumers        utils.TypedSyncMap[string, kTypes.ResponseConsumer]
+	ctx              context.Context
+	cancelFunc       context.CancelFunc
+}
+
+// NewCommandBus crea una nueva instancia del bus de comandos unificado
+func NewCommandBus(config KatalyzeCommandBusConfig) (*KatalyzeCommandBus, error) {
+	if config.BootstrapServers == "" {
+		return nil, errors.New("se requieren servidores bootstrap")
+	}
+
+	if config.ClientID == "" {
+		return nil, errors.New("se requiere un ID de cliente")
+	}
+
+	if config.ResponseTimeoutMs <= 0 {
+		config.ResponseTimeoutMs = 5000 // Timeout predeterminado: 5 segundos
+	}
+
+	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
+		SetClientId(config.ClientID).
+		Build()
+
+	if err != nil {
+		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
+	}
+
+	client, err := client_builder.NewClientBuilder().
+		SetClientId(config.ClientID).
+		SetAdminClient(adminClient).
+		Build()
+
+	if err != nil {
+		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
+	}
+
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	return &KatalyzeCommandBus{
+		client:           client,
+		bootstrapServers: config.BootstrapServers,
+		producers:        *utils.NewTypedSyncMap[string, kTypes.ResponseProducer](),
+		consumers:        *utils.NewTypedSyncMap[string, kTypes.ResponseConsumer](),
+		ctx:              ctx,
+		cancelFunc:       cancelFunc,
+	}, nil
+}
+
+func (b *KatalyzeCommandBus) Dispatch(command types.Command) error {
+	if err := b.registerProducerIfNotExists(command.MessageName()); err != nil {
+		return err
+	}
+
+	// Obtener el productor
+	producer, ok := b.producers.Load(command.MessageName())
+	if !ok {
+		return errors.New("producer no encontrado")
+	}
+
+	// Serializar el comando a JSON
+	marshaledCommand, err := json.Marshal(command)
+	if err != nil {
+		return fmt.Errorf("error de serialización: %w", err)
+	}
+
+	// Usar el timeout por defecto
+	timeoutMs := 5000
+	res, err := producer.Produce(command.MessageName(), []byte(""), marshaledCommand, timeoutMs)
+	if err != nil {
+		return fmt.Errorf("error al producir comando: %w", err)
+	}
+	if res == nil {
+		return errors.New("no se recibió respuesta del comando")
+	}
+
+	return nil
+}
+
+func (b *KatalyzeCommandBus) registerProducerIfNotExists(messageName string) error {
+	if _, exists := b.producers.Load(messageName); exists {
+		return nil
+	}
+	producer, err := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName).
+		Build()
+	if err != nil {
+		return err
+	}
+	if err := b.client.RegisterResponseProducer(producer); err != nil {
+		return err
+	}
+	b.producers.Store(messageName, producer)
+	return nil
+}
+
+func (b *KatalyzeCommandBus) registerConsumerIfNotExists(messageName string) error {
+	if _, exists := b.consumers.Load(messageName); exists {
+		return nil
+	}
+	producer, err := producer_helper.CreateProducer(b.bootstrapServers, messageName)
+	if err != nil {
+		return err
+	}
+	consumer, err := consumer_builder.NewResponseConsumerBuilder(b.bootstrapServers, []string{messageName}).SetResponseProducer(producer).Build()
+	if err != nil {
+		return err
+	}
+	if err := b.client.RegisterConsumer(consumer); err != nil {
+		return err
+	}
+	b.consumers.Store(messageName, consumer)
+	return nil
+}
+
+func (b *KatalyzeCommandBus) RegisterHandler(messageName string, handler types.CommandHandler, factory types.CommandFactory) error {
+	if err := b.registerConsumerIfNotExists(messageName); err != nil {
+		return err
+	}
+	consumer, ok := b.consumers.Load(messageName)
+	if !ok {
+		return errors.New("consumer no encontrado")
+	}
+
+	var responseFunc kTypes.ResponseHandler = func(message kTypes.Message) (interface{}, error) {
+		command := factory()
+		if err := json.Unmarshal(message.Value(), command); err != nil {
+			return nil, err
+		}
+		return handler.Handle(command)
+	}
+	consumer.Subscribe(responseFunc)
+	return nil
+}
+
+func (b *KatalyzeCommandBus) Close() error {
+	b.cancelFunc()
+	b.client.Close()
+	return nil
+}
+</file>
+
+<file path="src/katalyze_impl/event_bus.go">
+package katalyze_impl
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	admin_builder "github.com/Angeldadro/Katalyze/src/builders/admin"
+	client_builder "github.com/Angeldadro/Katalyze/src/builders/client"
+	consumer_builder "github.com/Angeldadro/Katalyze/src/builders/consumer"
+	"github.com/Angeldadro/Katalyze/src/client"
+	producer_helper "github.com/Angeldadro/Katalyze/src/helpers/producer"
+	kTypes "github.com/Angeldadro/Katalyze/src/types"
+	"github.com/Angeldadro/Qraxis/src/types"
+	"github.com/Angeldadro/Qraxis/src/utils"
+)
+
+type KatalyzeEventBusConfig struct {
+	BootstrapServers string
+	ClientID         string
+	MaxRetries       int
+	RetryInterval    int
+}
+
+// KatalyzeEventBus implementa un único EventBus que maneja todos los eventos
+type KatalyzeEventBus struct {
+	client           *client.Client
+	bootstrapServers string
+	clientID         string
+	producers        utils.TypedSyncMap[string, kTypes.SingleProducer]
+	// Mapa anidado: messageName -> (action -> consumer)
+	consumers     utils.TypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]]
+	maxRetries    int
+	retryInterval int
+	ctx           context.Context
+	cancelFunc    context.CancelFunc
+}
+
+// NewEventBus crea una nueva instancia del bus de eventos unificado
+func NewEventBus(config KatalyzeEventBusConfig) (*KatalyzeEventBus, error) {
+	if config.BootstrapServers == "" {
+		return nil, errors.New("se requieren servidores bootstrap")
+	}
+
+	if config.ClientID == "" {
+		return nil, errors.New("se requiere un ID de cliente")
+	}
+
+	if config.MaxRetries <= 0 {
+		config.MaxRetries = 3
+	}
+
+	if config.RetryInterval <= 0 {
+		config.RetryInterval = 5000
+	}
+
+	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
+		SetClientId(config.ClientID).
+		Build()
+
+	if err != nil {
+		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
+	}
+
+	client, err := client_builder.NewClientBuilder().
+		SetClientId(config.ClientID).
+		SetAdminClient(adminClient).
+		Build()
+
+	if err != nil {
+		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
+	}
+
+	ctx, cancelFunc := context.WithCancel(context.Background())
+
+	return &KatalyzeEventBus{
+		client:           client,
+		bootstrapServers: config.BootstrapServers,
+		clientID:         config.ClientID,
+		producers:        *utils.NewTypedSyncMap[string, kTypes.SingleProducer](),
+		consumers:        *utils.NewTypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]](),
+		maxRetries:       config.MaxRetries,
+		retryInterval:    config.RetryInterval,
+		ctx:              ctx,
+		cancelFunc:       cancelFunc,
+	}, nil
+}
+
+func (b *KatalyzeEventBus) Publish(event types.Event) error {
+	if err := b.registerProducerIfNotExists(event.MessageName()); err != nil {
+		return err
+	}
+	producer, ok := b.producers.Load(event.MessageName())
+	if !ok {
+		return errors.New("producer no encontrado")
+	}
+
+	marshaledEvent, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("error de serialización: %w", err)
+	}
+
+	return producer.Produce(event.MessageName(), "", marshaledEvent)
+}
+
+func (b *KatalyzeEventBus) registerProducerIfNotExists(messageName string) error {
+	if _, exists := b.producers.Load(messageName); exists {
+		return nil
+	}
+	producer, err := producer_helper.CreateProducer(b.bootstrapServers, messageName)
+	if err != nil {
+		return err
+	}
+	if err := b.client.RegisterProducer(producer); err != nil {
+		return err
+	}
+	b.producers.Store(messageName, producer)
+	return nil
+}
+
+func (b *KatalyzeEventBus) registerConsumerIfNotExists(messageName string, action string) error {
+	// Obtener el mapa interno para este messageName o crear uno nuevo si no existe
+	actionMap, exists := b.consumers.Load(messageName)
+	if !exists {
+		actionMap = utils.NewTypedSyncMap[string, kTypes.RetryConsumer]()
+		b.consumers.Store(messageName, actionMap)
+	}
+
+	// Verificar si ya existe un consumer para esta acción
+	if _, exists := actionMap.Load(action); exists {
+		return nil
+	}
+
+	// Crear un nuevo productor para retry
+	producer, err := producer_helper.CreateRetryProducer(b.bootstrapServers, b.clientID)
+	if err != nil {
+		return err
+	}
+
+	// Crear un nuevo consumer
+	consumerBuilder := consumer_builder.NewRetryConsumerBuilder(b.bootstrapServers, []string{messageName}, action, b.maxRetries)
+	consumerBuilder.SetMaxRetries(b.maxRetries)
+	consumerBuilder.SetProducer(producer)
+	consumerBuilder.SetRetryInterval(b.retryInterval)
+	consumer, err := consumerBuilder.Build()
+	if err != nil {
+		return err
+	}
+
+	// Registrar el consumer en el cliente
+	if err := b.client.RegisterConsumer(consumer); err != nil {
+		return err
+	}
+
+	// Almacenar el consumer en el mapa interno
+	actionMap.Store(action, consumer)
+	return nil
+}
+
+func (b *KatalyzeEventBus) Subscribe(messageName string, action string, handler types.EventHandler, factory types.EventFactory) error {
+	// Registrar el consumer si no existe
+	if err := b.registerConsumerIfNotExists(messageName, action); err != nil {
+		return err
+	}
+
+	// Obtener el mapa de acciones para este messageName
+	actionMap, ok := b.consumers.Load(messageName)
+	if !ok {
+		return errors.New("mapa de acciones no encontrado para el mensaje")
+	}
+
+	// Obtener el consumer para esta acción específica
+	consumer, ok := actionMap.Load(action)
+	if !ok {
+		return errors.New("consumer no encontrado para la acción")
+	}
+
+	// Suscribir el handler al consumer
+	consumer.Subscribe(func(msg kTypes.Message) error {
+		event := factory()
+		if err := json.Unmarshal(msg.Value(), event); err != nil {
+			return err
+		}
+		return handler.Handle(event)
+	})
+
+	return nil
+}
+
+func (b *KatalyzeEventBus) Close() error {
+	b.cancelFunc()
+	b.client.Close()
+	return nil
+}
+</file>
+
+<file path="src/types/command.go">
+package types
+
+type Command interface {
+	Message
+}
+type CommandResult interface{}
+
+type CommandHandler interface {
+	Handle(command Command) (CommandResult, error)
+	CanHandle(command Command) bool
+}
+
+type CommandFactory func() Command
+type CommandBus interface {
+	Dispatch(command Command) error
+	RegisterHandler(messageName string, handler CommandHandler, factory CommandFactory) error
+	Close() error
+}
+</file>
+
+</files>

@@ -12,7 +12,7 @@ bin/
 # Output de perfiles de cobertura
 *.out
 *.prof
-
+repomix-output.xml
 # Directorio de dependencias
 vendor/
 

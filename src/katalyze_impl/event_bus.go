@@ -1,3 +1,4 @@
+// Archivo: Qraxis/src/katalyze_impl/event_bus.go
 package katalyze_impl
 
 import (
@@ -9,8 +10,9 @@ import (
 	admin_builder "github.com/Angeldadro/Katalyze/src/builders/admin"
 	client_builder "github.com/Angeldadro/Katalyze/src/builders/client"
 	consumer_builder "github.com/Angeldadro/Katalyze/src/builders/consumer"
+	producer_builder "github.com/Angeldadro/Katalyze/src/builders/producer"
+	producer_types "github.com/Angeldadro/Katalyze/src/builders/producer/types"
 	"github.com/Angeldadro/Katalyze/src/client"
-	producer_helper "github.com/Angeldadro/Katalyze/src/helpers/producer"
 	kTypes "github.com/Angeldadro/Katalyze/src/types"
 	"github.com/Angeldadro/Qraxis/src/types"
 	"github.com/Angeldadro/Qraxis/src/utils"
@@ -21,59 +23,49 @@ type KatalyzeEventBusConfig struct {
 	ClientID         string
 	MaxRetries       int
 	RetryInterval    int
+	ProducerConfig   map[string]interface{} // <-- AÑADIDO
 }
 
-// KatalyzeEventBus implementa un único EventBus que maneja todos los eventos
 type KatalyzeEventBus struct {
 	client           *client.Client
 	bootstrapServers string
 	clientID         string
 	producers        utils.TypedSyncMap[string, kTypes.SingleProducer]
-	// Mapa anidado: messageName -> (action -> consumer)
-	consumers     utils.TypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]]
-	maxRetries    int
-	retryInterval int
-	ctx           context.Context
-	cancelFunc    context.CancelFunc
+	consumers        utils.TypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]]
+	maxRetries       int
+	retryInterval    int
+	ctx              context.Context
+	cancelFunc       context.CancelFunc
+	producerConfig   map[string]interface{} // <-- AÑADIDO
 }
 
-// NewEventBus crea una nueva instancia del bus de eventos unificado
 func NewEventBus(config KatalyzeEventBusConfig) (*KatalyzeEventBus, error) {
 	if config.BootstrapServers == "" {
 		return nil, errors.New("se requieren servidores bootstrap")
 	}
-
 	if config.ClientID == "" {
 		return nil, errors.New("se requiere un ID de cliente")
 	}
-
 	if config.MaxRetries <= 0 {
 		config.MaxRetries = 3
 	}
-
 	if config.RetryInterval <= 0 {
 		config.RetryInterval = 5000
 	}
-
 	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
 		SetClientId(config.ClientID).
 		Build()
-
 	if err != nil {
 		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
 	}
-
 	client, err := client_builder.NewClientBuilder().
 		SetClientId(config.ClientID).
 		SetAdminClient(adminClient).
 		Build()
-
 	if err != nil {
 		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
 	}
-
 	ctx, cancelFunc := context.WithCancel(context.Background())
-
 	return &KatalyzeEventBus{
 		client:           client,
 		bootstrapServers: config.BootstrapServers,
@@ -84,6 +76,7 @@ func NewEventBus(config KatalyzeEventBusConfig) (*KatalyzeEventBus, error) {
 		retryInterval:    config.RetryInterval,
 		ctx:              ctx,
 		cancelFunc:       cancelFunc,
+		producerConfig:   config.ProducerConfig, // <-- AÑADIDO
 	}, nil
 }
 
@@ -95,12 +88,10 @@ func (b *KatalyzeEventBus) Publish(event types.Event) error {
 	if !ok {
 		return errors.New("producer no encontrado")
 	}
-
 	marshaledEvent, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("error de serialización: %w", err)
 	}
-
 	return producer.Produce(event.MessageName(), "", marshaledEvent)
 }
 
@@ -108,7 +99,33 @@ func (b *KatalyzeEventBus) registerProducerIfNotExists(messageName string) error
 	if _, exists := b.producers.Load(messageName); exists {
 		return nil
 	}
-	producer, err := producer_helper.CreateProducer(b.bootstrapServers, messageName)
+
+	// --- INICIO DE MODIFICACIÓN ---
+	// Se reemplaza el helper por el builder para poder aplicar configuración personalizada.
+	builder := producer_builder.NewSingleProducerBuilder(messageName, b.bootstrapServers)
+	builder.SetClientId(b.clientID)
+
+	if b.producerConfig != nil {
+		// Aplicamos la configuración del preset de retry por defecto
+		builder.SetAcks(producer_types.AcksAll)
+		builder.SetCompressionType(producer_types.CompressionTypeSnappy)
+		builder.SetMaxInFlightRequestsPerConnection(5)
+		builder.SetLingerMs(10)
+
+		// Sobrescribimos con la configuración del usuario
+		for key, value := range b.producerConfig {
+			switch key {
+			case "enable.idempotence":
+				if v, ok := value.(bool); ok {
+					builder.SetEnableIdempotence(v)
+				}
+			}
+		}
+	}
+
+	producer, err := builder.Build()
+	// --- FIN DE MODIFICACIÓN ---
+
 	if err != nil {
 		return err
 	}
@@ -120,25 +137,45 @@ func (b *KatalyzeEventBus) registerProducerIfNotExists(messageName string) error
 }
 
 func (b *KatalyzeEventBus) registerConsumerIfNotExists(messageName string, action string) error {
-	// Obtener el mapa interno para este messageName o crear uno nuevo si no existe
 	actionMap, exists := b.consumers.Load(messageName)
 	if !exists {
 		actionMap = utils.NewTypedSyncMap[string, kTypes.RetryConsumer]()
 		b.consumers.Store(messageName, actionMap)
 	}
-
-	// Verificar si ya existe un consumer para esta acción
 	if _, exists := actionMap.Load(action); exists {
 		return nil
 	}
 
-	// Crear un nuevo productor para retry
-	producer, err := producer_helper.CreateRetryProducer(b.bootstrapServers, b.clientID)
+	// --- INICIO DE MODIFICACIÓN ---
+	// Crear un productor para reintentos usando el builder para aplicar configuración
+	retryProducerName := fmt.Sprintf("%s-retry-producer", action)
+	retryProducerBuilder := producer_builder.NewSingleProducerBuilder(retryProducerName, b.bootstrapServers)
+	retryProducerBuilder.SetClientId(b.clientID)
+
+	// Aplicamos configuración de reintentos por defecto
+	retryProducerBuilder.SetAcks(producer_types.AcksAll)
+	retryProducerBuilder.SetCompressionType(producer_types.CompressionTypeSnappy)
+	retryProducerBuilder.SetEnableIdempotence(true)
+	retryProducerBuilder.SetMaxInFlightRequestsPerConnection(5)
+	retryProducerBuilder.SetLingerMs(10)
+
+	// Sobrescribimos con la configuración del usuario
+	if b.producerConfig != nil {
+		for key, value := range b.producerConfig {
+			switch key {
+			case "enable.idempotence":
+				if v, ok := value.(bool); ok {
+					retryProducerBuilder.SetEnableIdempotence(v)
+				}
+			}
+		}
+	}
+	producer, err := retryProducerBuilder.Build()
+	// --- FIN DE MODIFICACIÓN ---
 	if err != nil {
 		return err
 	}
 
-	// Crear un nuevo consumer
 	consumerBuilder := consumer_builder.NewRetryConsumerBuilder(b.bootstrapServers, []string{messageName}, action, b.maxRetries)
 	consumerBuilder.SetMaxRetries(b.maxRetries)
 	consumerBuilder.SetProducer(producer)
@@ -147,36 +184,25 @@ func (b *KatalyzeEventBus) registerConsumerIfNotExists(messageName string, actio
 	if err != nil {
 		return err
 	}
-
-	// Registrar el consumer en el cliente
 	if err := b.client.RegisterConsumer(consumer); err != nil {
 		return err
 	}
-
-	// Almacenar el consumer en el mapa interno
 	actionMap.Store(action, consumer)
 	return nil
 }
 
 func (b *KatalyzeEventBus) Subscribe(messageName string, action string, handler types.EventHandler, factory types.EventFactory) error {
-	// Registrar el consumer si no existe
 	if err := b.registerConsumerIfNotExists(messageName, action); err != nil {
 		return err
 	}
-
-	// Obtener el mapa de acciones para este messageName
 	actionMap, ok := b.consumers.Load(messageName)
 	if !ok {
 		return errors.New("mapa de acciones no encontrado para el mensaje")
 	}
-
-	// Obtener el consumer para esta acción específica
 	consumer, ok := actionMap.Load(action)
 	if !ok {
 		return errors.New("consumer no encontrado para la acción")
 	}
-
-	// Suscribir el handler al consumer
 	consumer.Subscribe(func(msg kTypes.Message) error {
 		event := factory()
 		if err := json.Unmarshal(msg.Value(), event); err != nil {
@@ -184,7 +210,6 @@ func (b *KatalyzeEventBus) Subscribe(messageName string, action string, handler 
 		}
 		return handler.Handle(event)
 	})
-
 	return nil
 }
 

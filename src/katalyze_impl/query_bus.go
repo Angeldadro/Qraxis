@@ -1,3 +1,4 @@
+// Archivo: Qraxis/src/katalyze_impl/query_bus.go
 package katalyze_impl
 
 import (
@@ -21,9 +22,9 @@ type KatalyzeQueryBusConfig struct {
 	BootstrapServers  string
 	ClientID          string
 	ResponseTimeoutMs int
+	ProducerConfig    map[string]interface{} // <-- AÑADIDO
 }
 
-// KatalyzeQueryBus implementa un único QueryBus que maneja todas las consultas
 type KatalyzeQueryBus struct {
 	client           *client.Client
 	bootstrapServers string
@@ -31,41 +32,33 @@ type KatalyzeQueryBus struct {
 	consumers        utils.TypedSyncMap[string, kTypes.ResponseConsumer]
 	ctx              context.Context
 	cancelFunc       context.CancelFunc
+	producerConfig   map[string]interface{} // <-- AÑADIDO
 }
 
-// NewQueryBus crea una nueva instancia del bus de consultas unificado
 func NewQueryBus(config KatalyzeQueryBusConfig) (*KatalyzeQueryBus, error) {
 	if config.BootstrapServers == "" {
 		return nil, errors.New("se requieren servidores bootstrap")
 	}
-
 	if config.ClientID == "" {
 		return nil, errors.New("se requiere un ID de cliente")
 	}
-
 	if config.ResponseTimeoutMs <= 0 {
-		config.ResponseTimeoutMs = 5000 // Timeout predeterminado: 5 segundos
+		config.ResponseTimeoutMs = 5000
 	}
-
 	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
 		SetClientId(config.ClientID).
 		Build()
-
 	if err != nil {
 		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
 	}
-
 	client, err := client_builder.NewClientBuilder().
 		SetClientId(config.ClientID).
 		SetAdminClient(adminClient).
 		Build()
-
 	if err != nil {
 		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
 	}
-
 	ctx, cancelFunc := context.WithCancel(context.Background())
-
 	return &KatalyzeQueryBus{
 		client:           client,
 		bootstrapServers: config.BootstrapServers,
@@ -73,6 +66,7 @@ func NewQueryBus(config KatalyzeQueryBusConfig) (*KatalyzeQueryBus, error) {
 		consumers:        *utils.NewTypedSyncMap[string, kTypes.ResponseConsumer](),
 		ctx:              ctx,
 		cancelFunc:       cancelFunc,
+		producerConfig:   config.ProducerConfig, // <-- AÑADIDO
 	}, nil
 }
 
@@ -80,14 +74,10 @@ func (b *KatalyzeQueryBus) Dispatch(query types.Query, timeoutMs int) (types.Que
 	if err := b.registerProducerIfNotExists(query.MessageName()); err != nil {
 		return nil, err
 	}
-
-	// Obtener el productor
 	producer, ok := b.producers.Load(query.MessageName())
 	if !ok {
 		return nil, errors.New("producer no encontrado")
 	}
-
-	// Serializar la consulta a JSON
 	marshaledQuery, err := json.Marshal(query)
 	if err != nil {
 		return nil, fmt.Errorf("error de serialización: %w", err)
@@ -100,7 +90,6 @@ func (b *KatalyzeQueryBus) Dispatch(query types.Query, timeoutMs int) (types.Que
 	if err := json.Unmarshal(res, &remarshaledQuery); err != nil {
 		return nil, fmt.Errorf("error al deserializar consulta: %w", err)
 	}
-
 	return remarshaledQuery, nil
 }
 
@@ -108,8 +97,15 @@ func (b *KatalyzeQueryBus) registerProducerIfNotExists(messageName string) error
 	if _, exists := b.producers.Load(messageName); exists {
 		return nil
 	}
-	producer, err := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName).
-		Build()
+	// --- INICIO DE MODIFICACIÓN ---
+	builder := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName)
+	if b.producerConfig != nil {
+		for key, value := range b.producerConfig {
+			builder.SetConfig(key, value)
+		}
+	}
+	producer, err := builder.Build()
+	// --- FIN DE MODIFICACIÓN ---
 	if err != nil {
 		return err
 	}

@@ -1,3 +1,4 @@
+// Archivo: Qraxis/src/katalyze_impl/command_bus.go
 package katalyze_impl
 
 import (
@@ -17,43 +18,26 @@ import (
 	"github.com/Angeldadro/Qraxis/src/utils"
 )
 
-// GenericCommand es una implementación genérica de Command para casos donde solo necesitamos el nombre del mensaje
 type GenericCommand struct {
 	messageName string
 	data        map[string]interface{}
 }
 
-func (c *GenericCommand) MessageName() string {
-	return c.messageName
-}
-
-func (c *GenericCommand) Type() types.MessageType {
-	return types.CommandMessageType
-}
-
-func (c *GenericCommand) Payload() interface{} {
-	return c.data
-}
-
-func (c *GenericCommand) Validate() error {
-	return nil // Implementación simple que siempre valida
-}
-
-// NewGenericCommand crea una nueva instancia de GenericCommand
+func (c *GenericCommand) MessageName() string          { return c.messageName }
+func (c *GenericCommand) Type() types.MessageType      { return types.CommandMessageType }
+func (c *GenericCommand) Payload() interface{}         { return c.data }
+func (c *GenericCommand) Validate() error              { return nil }
 func NewGenericCommand(messageName string, data map[string]interface{}) *GenericCommand {
-	return &GenericCommand{
-		messageName: messageName,
-		data:        data,
-	}
+	return &GenericCommand{messageName: messageName, data: data}
 }
 
 type KatalyzeCommandBusConfig struct {
 	BootstrapServers  string
 	ClientID          string
 	ResponseTimeoutMs int
+	ProducerConfig    map[string]interface{} // <-- AÑADIDO
 }
 
-// KatalyzeCommandBus implementa un único CommandBus que maneja todos los comandos
 type KatalyzeCommandBus struct {
 	client           *client.Client
 	bootstrapServers string
@@ -61,41 +45,33 @@ type KatalyzeCommandBus struct {
 	consumers        utils.TypedSyncMap[string, kTypes.ResponseConsumer]
 	ctx              context.Context
 	cancelFunc       context.CancelFunc
+	producerConfig   map[string]interface{} // <-- AÑADIDO
 }
 
-// NewCommandBus crea una nueva instancia del bus de comandos unificado
 func NewCommandBus(config KatalyzeCommandBusConfig) (*KatalyzeCommandBus, error) {
 	if config.BootstrapServers == "" {
 		return nil, errors.New("se requieren servidores bootstrap")
 	}
-
 	if config.ClientID == "" {
 		return nil, errors.New("se requiere un ID de cliente")
 	}
-
 	if config.ResponseTimeoutMs <= 0 {
-		config.ResponseTimeoutMs = 5000 // Timeout predeterminado: 5 segundos
+		config.ResponseTimeoutMs = 5000
 	}
-
 	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
 		SetClientId(config.ClientID).
 		Build()
-
 	if err != nil {
 		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
 	}
-
 	client, err := client_builder.NewClientBuilder().
 		SetClientId(config.ClientID).
 		SetAdminClient(adminClient).
 		Build()
-
 	if err != nil {
 		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
 	}
-
 	ctx, cancelFunc := context.WithCancel(context.Background())
-
 	return &KatalyzeCommandBus{
 		client:           client,
 		bootstrapServers: config.BootstrapServers,
@@ -103,6 +79,7 @@ func NewCommandBus(config KatalyzeCommandBusConfig) (*KatalyzeCommandBus, error)
 		consumers:        *utils.NewTypedSyncMap[string, kTypes.ResponseConsumer](),
 		ctx:              ctx,
 		cancelFunc:       cancelFunc,
+		producerConfig:   config.ProducerConfig, // <-- AÑADIDO
 	}, nil
 }
 
@@ -110,20 +87,14 @@ func (b *KatalyzeCommandBus) Dispatch(command types.Command) error {
 	if err := b.registerProducerIfNotExists(command.MessageName()); err != nil {
 		return err
 	}
-
-	// Obtener el productor
 	producer, ok := b.producers.Load(command.MessageName())
 	if !ok {
 		return errors.New("producer no encontrado")
 	}
-
-	// Serializar el comando a JSON
 	marshaledCommand, err := json.Marshal(command)
 	if err != nil {
 		return fmt.Errorf("error de serialización: %w", err)
 	}
-
-	// Usar el timeout por defecto
 	timeoutMs := 5000
 	res, err := producer.Produce(command.MessageName(), []byte(""), marshaledCommand, timeoutMs)
 	if err != nil {
@@ -132,7 +103,6 @@ func (b *KatalyzeCommandBus) Dispatch(command types.Command) error {
 	if res == nil {
 		return errors.New("no se recibió respuesta del comando")
 	}
-
 	return nil
 }
 
@@ -140,8 +110,15 @@ func (b *KatalyzeCommandBus) registerProducerIfNotExists(messageName string) err
 	if _, exists := b.producers.Load(messageName); exists {
 		return nil
 	}
-	producer, err := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName).
-		Build()
+	// --- INICIO DE MODIFICACIÓN ---
+	builder := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName)
+	if b.producerConfig != nil {
+		for key, value := range b.producerConfig {
+			builder.SetConfig(key, value)
+		}
+	}
+	producer, err := builder.Build()
+	// --- FIN DE MODIFICACIÓN ---
 	if err != nil {
 		return err
 	}
@@ -179,7 +156,6 @@ func (b *KatalyzeCommandBus) RegisterHandler(messageName string, handler types.C
 	if !ok {
 		return errors.New("consumer no encontrado")
 	}
-
 	var responseFunc kTypes.ResponseHandler = func(message kTypes.Message) (interface{}, error) {
 		command := factory()
 		if err := json.Unmarshal(message.Value(), command); err != nil {
