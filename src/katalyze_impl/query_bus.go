@@ -152,7 +152,6 @@ func (b *KatalyzeQueryBus) RegisterHandler(messageName string, handler types.Que
 	return nil
 }
 
-// --- MÉTODO AÑADIDO ---
 func (b *KatalyzeQueryBus) WarmUp(queryNames []string) {
 	log.Println("[Qraxis] Iniciando calentamiento del QueryBus...")
 	start := time.Now()
@@ -163,15 +162,15 @@ func (b *KatalyzeQueryBus) WarmUp(queryNames []string) {
 		go func(queryName string) {
 			defer wg.Done()
 			log.Printf("[Qraxis WarmUp] Forzando inicialización del productor para la consulta '%s'...", queryName)
-			_ = b.registerProducerIfNotExists(queryName)
+			if err := b.registerProducerIfNotExists(queryName); err != nil {
+				log.Printf("[Qraxis WarmUp] Error al calentar el productor para '%s': %v", queryName, err)
+			}
 		}(name)
 	}
 
 	wg.Wait()
 	log.Printf("[Qraxis] Calentamiento del QueryBus completado en %v.", time.Since(start))
 }
-
-// --- FIN DEL MÉTODO AÑADIDO ---
 
 func (b *KatalyzeQueryBus) Close() error {
 	b.cancelFunc()
