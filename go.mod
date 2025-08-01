@@ -2,7 +2,7 @@ module github.com/Angeldadro/Qraxis
 
 go 1.24.2
 
-require github.com/Angeldadro/Katalyze v1.7.1
+require github.com/Angeldadro/Katalyze v1.7.2
 
 require (
 	github.com/confluentinc/confluent-kafka-go/v2 v2.10.0 // indirect
