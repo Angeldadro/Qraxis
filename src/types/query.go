@@ -16,5 +16,7 @@ type QueryFactory func() Query
 type QueryBus interface {
 	Dispatch(query Query, timeoutMs int) (QueryResult, error)
 	RegisterHandler(messageName string, handler QueryHandler, factory QueryFactory) error
+	// --- LÍNEA AÑADIDA ---
+	WarmUp(queryNames []string)
 	Close() error
 }

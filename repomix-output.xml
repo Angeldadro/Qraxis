@@ -59,46 +59,6 @@ src/utils/typed_map.go
 <files>
 This section contains the contents of the repository's files.
 
-<file path=".gitignore">
-# Binarios compilados
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-bin/
-
-# Archivos de prueba
-*.test
-
-# Output de perfiles de cobertura
-*.out
-*.prof
-
-# Directorio de dependencias
-vendor/
-
-# Go workspace file
-go.work
-
-# Archivos temporales del IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# Archivos de log
-*.log
-
-# Archivos del sistema
-.DS_Store
-Thumbs.db
-
-# Directorios de caché
-.cache/
-</file>
-
 <file path="src/types/message.go">
 package types
 
@@ -189,6 +149,46 @@ func (t *TypedSyncMap[K, V]) Range(f func(key K, value V) bool) {
 		return f(key, val)
 	})
 }
+</file>
+
+<file path=".gitignore">
+# Binarios compilados
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Archivos de prueba
+*.test
+
+# Output de perfiles de cobertura
+*.out
+*.prof
+repomix-output.xml
+# Directorio de dependencias
+vendor/
+
+# Go workspace file
+go.work
+
+# Archivos temporales del IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Archivos de log
+*.log
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Directorios de caché
+.cache/
 </file>
 
 <file path="examples/command_bus/main.go">
@@ -569,174 +569,6 @@ func main() {
 }
 </file>
 
-<file path="src/katalyze_impl/query_bus.go">
-package katalyze_impl
-
-import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-
-	admin_builder "github.com/Angeldadro/Katalyze/src/builders/admin"
-	client_builder "github.com/Angeldadro/Katalyze/src/builders/client"
-	consumer_builder "github.com/Angeldadro/Katalyze/src/builders/consumer"
-	producer_builder "github.com/Angeldadro/Katalyze/src/builders/producer"
-	"github.com/Angeldadro/Katalyze/src/client"
-	producer_helper "github.com/Angeldadro/Katalyze/src/helpers/producer"
-	kTypes "github.com/Angeldadro/Katalyze/src/types"
-	"github.com/Angeldadro/Qraxis/src/types"
-	"github.com/Angeldadro/Qraxis/src/utils"
-)
-
-type KatalyzeQueryBusConfig struct {
-	BootstrapServers  string
-	ClientID          string
-	ResponseTimeoutMs int
-}
-
-// KatalyzeQueryBus implementa un único QueryBus que maneja todas las consultas
-type KatalyzeQueryBus struct {
-	client           *client.Client
-	bootstrapServers string
-	producers        utils.TypedSyncMap[string, kTypes.ResponseProducer]
-	consumers        utils.TypedSyncMap[string, kTypes.ResponseConsumer]
-	ctx              context.Context
-	cancelFunc       context.CancelFunc
-}
-
-// NewQueryBus crea una nueva instancia del bus de consultas unificado
-func NewQueryBus(config KatalyzeQueryBusConfig) (*KatalyzeQueryBus, error) {
-	if config.BootstrapServers == "" {
-		return nil, errors.New("se requieren servidores bootstrap")
-	}
-
-	if config.ClientID == "" {
-		return nil, errors.New("se requiere un ID de cliente")
-	}
-
-	if config.ResponseTimeoutMs <= 0 {
-		config.ResponseTimeoutMs = 5000 // Timeout predeterminado: 5 segundos
-	}
-
-	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
-		SetClientId(config.ClientID).
-		Build()
-
-	if err != nil {
-		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
-	}
-
-	client, err := client_builder.NewClientBuilder().
-		SetClientId(config.ClientID).
-		SetAdminClient(adminClient).
-		Build()
-
-	if err != nil {
-		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
-	}
-
-	ctx, cancelFunc := context.WithCancel(context.Background())
-
-	return &KatalyzeQueryBus{
-		client:           client,
-		bootstrapServers: config.BootstrapServers,
-		producers:        *utils.NewTypedSyncMap[string, kTypes.ResponseProducer](),
-		consumers:        *utils.NewTypedSyncMap[string, kTypes.ResponseConsumer](),
-		ctx:              ctx,
-		cancelFunc:       cancelFunc,
-	}, nil
-}
-
-func (b *KatalyzeQueryBus) Dispatch(query types.Query, timeoutMs int) (types.QueryResult, error) {
-	if err := b.registerProducerIfNotExists(query.MessageName()); err != nil {
-		return nil, err
-	}
-
-	// Obtener el productor
-	producer, ok := b.producers.Load(query.MessageName())
-	if !ok {
-		return nil, errors.New("producer no encontrado")
-	}
-
-	// Serializar la consulta a JSON
-	marshaledQuery, err := json.Marshal(query)
-	if err != nil {
-		return nil, fmt.Errorf("error de serialización: %w", err)
-	}
-	res, err := producer.Produce(query.MessageName(), []byte(""), marshaledQuery, timeoutMs)
-	if err != nil {
-		return nil, fmt.Errorf("error al producir consulta: %w", err)
-	}
-	var remarshaledQuery types.QueryResult
-	if err := json.Unmarshal(res, &remarshaledQuery); err != nil {
-		return nil, fmt.Errorf("error al deserializar consulta: %w", err)
-	}
-
-	return remarshaledQuery, nil
-}
-
-func (b *KatalyzeQueryBus) registerProducerIfNotExists(messageName string) error {
-	if _, exists := b.producers.Load(messageName); exists {
-		return nil
-	}
-	producer, err := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName).
-		Build()
-	if err != nil {
-		return err
-	}
-	if err := b.client.RegisterResponseProducer(producer); err != nil {
-		return err
-	}
-	b.producers.Store(messageName, producer)
-	return nil
-}
-
-func (b *KatalyzeQueryBus) registerConsumerIfNotExists(messageName string) error {
-	if _, exists := b.consumers.Load(messageName); exists {
-		return nil
-	}
-	producer, err := producer_helper.CreateProducer(b.bootstrapServers, messageName)
-	if err != nil {
-		return err
-	}
-	consumer, err := consumer_builder.NewResponseConsumerBuilder(b.bootstrapServers, []string{messageName}).SetResponseProducer(producer).Build()
-	if err != nil {
-		return err
-	}
-	if err := b.client.RegisterConsumer(consumer); err != nil {
-		return err
-	}
-	b.consumers.Store(messageName, consumer)
-	return nil
-}
-
-func (b *KatalyzeQueryBus) RegisterHandler(messageName string, handler types.QueryHandler, factory types.QueryFactory) error {
-	if err := b.registerConsumerIfNotExists(messageName); err != nil {
-		return err
-	}
-	consumer, ok := b.consumers.Load(messageName)
-	if !ok {
-		return errors.New("consumer no encontrado")
-	}
-	var responseFunc kTypes.ResponseHandler = func(message kTypes.Message) (interface{}, error) {
-		query := factory()
-		if err := json.Unmarshal(message.Value(), query); err != nil {
-			return nil, err
-		}
-		return handler.Handle(query)
-	}
-	consumer.Subscribe(responseFunc)
-	return nil
-}
-
-func (b *KatalyzeQueryBus) Close() error {
-	b.cancelFunc()
-	b.client.Close()
-	return nil
-}
-</file>
-
 <file path="src/types/event.go">
 package types
 
@@ -987,19 +819,6 @@ func main() {
 }
 </file>
 
-<file path="go.mod">
-module github.com/Angeldadro/Qraxis
-
-go 1.24.2
-
-require github.com/Angeldadro/Katalyze v1.5.0
-
-require (
-	github.com/confluentinc/confluent-kafka-go/v2 v2.10.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
-)
-</file>
-
 <file path="README.md">
 # Qraxis
 
@@ -1169,7 +988,8 @@ Este proyecto está licenciado bajo la Licencia MIT - ver el archivo LICENSE par
 Desarrollado con ❤️ por [@Angeldadro](https://github.com/Angeldadro)
 </file>
 
-<file path="src/katalyze_impl/command_bus.go">
+<file path="src/katalyze_impl/query_bus.go">
+// Archivo: Qraxis/src/katalyze_impl/query_bus.go
 package katalyze_impl
 
 import (
@@ -1189,43 +1009,203 @@ import (
 	"github.com/Angeldadro/Qraxis/src/utils"
 )
 
-// GenericCommand es una implementación genérica de Command para casos donde solo necesitamos el nombre del mensaje
+type KatalyzeQueryBusConfig struct {
+	BootstrapServers  string
+	ClientID          string
+	ResponseTimeoutMs int
+	ProducerConfig    map[string]interface{} // <-- AÑADIDO
+}
+
+type KatalyzeQueryBus struct {
+	client           *client.Client
+	bootstrapServers string
+	producers        utils.TypedSyncMap[string, kTypes.ResponseProducer]
+	consumers        utils.TypedSyncMap[string, kTypes.ResponseConsumer]
+	ctx              context.Context
+	cancelFunc       context.CancelFunc
+	producerConfig   map[string]interface{} // <-- AÑADIDO
+}
+
+func NewQueryBus(config KatalyzeQueryBusConfig) (*KatalyzeQueryBus, error) {
+	if config.BootstrapServers == "" {
+		return nil, errors.New("se requieren servidores bootstrap")
+	}
+	if config.ClientID == "" {
+		return nil, errors.New("se requiere un ID de cliente")
+	}
+	if config.ResponseTimeoutMs <= 0 {
+		config.ResponseTimeoutMs = 5000
+	}
+	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
+		SetClientId(config.ClientID).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
+	}
+	client, err := client_builder.NewClientBuilder().
+		SetClientId(config.ClientID).
+		SetAdminClient(adminClient).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
+	}
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	return &KatalyzeQueryBus{
+		client:           client,
+		bootstrapServers: config.BootstrapServers,
+		producers:        *utils.NewTypedSyncMap[string, kTypes.ResponseProducer](),
+		consumers:        *utils.NewTypedSyncMap[string, kTypes.ResponseConsumer](),
+		ctx:              ctx,
+		cancelFunc:       cancelFunc,
+		producerConfig:   config.ProducerConfig, // <-- AÑADIDO
+	}, nil
+}
+
+func (b *KatalyzeQueryBus) Dispatch(query types.Query, timeoutMs int) (types.QueryResult, error) {
+	if err := b.registerProducerIfNotExists(query.MessageName()); err != nil {
+		return nil, err
+	}
+	producer, ok := b.producers.Load(query.MessageName())
+	if !ok {
+		return nil, errors.New("producer no encontrado")
+	}
+	marshaledQuery, err := json.Marshal(query)
+	if err != nil {
+		return nil, fmt.Errorf("error de serialización: %w", err)
+	}
+	res, err := producer.Produce(query.MessageName(), []byte(""), marshaledQuery, timeoutMs)
+	if err != nil {
+		return nil, fmt.Errorf("error al producir consulta: %w", err)
+	}
+	var remarshaledQuery types.QueryResult
+	if err := json.Unmarshal(res, &remarshaledQuery); err != nil {
+		return nil, fmt.Errorf("error al deserializar consulta: %w", err)
+	}
+	return remarshaledQuery, nil
+}
+
+func (b *KatalyzeQueryBus) registerProducerIfNotExists(messageName string) error {
+	if _, exists := b.producers.Load(messageName); exists {
+		return nil
+	}
+	// --- INICIO DE MODIFICACIÓN ---
+	builder := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName)
+	if b.producerConfig != nil {
+		for key, value := range b.producerConfig {
+			builder.SetConfig(key, value)
+		}
+	}
+	producer, err := builder.Build()
+	// --- FIN DE MODIFICACIÓN ---
+	if err != nil {
+		return err
+	}
+	if err := b.client.RegisterResponseProducer(producer); err != nil {
+		return err
+	}
+	b.producers.Store(messageName, producer)
+	return nil
+}
+
+func (b *KatalyzeQueryBus) registerConsumerIfNotExists(messageName string) error {
+	if _, exists := b.consumers.Load(messageName); exists {
+		return nil
+	}
+	producer, err := producer_helper.CreateProducer(b.bootstrapServers, messageName)
+	if err != nil {
+		return err
+	}
+	consumer, err := consumer_builder.NewResponseConsumerBuilder(b.bootstrapServers, []string{messageName}).SetResponseProducer(producer).Build()
+	if err != nil {
+		return err
+	}
+	if err := b.client.RegisterConsumer(consumer); err != nil {
+		return err
+	}
+	b.consumers.Store(messageName, consumer)
+	return nil
+}
+
+func (b *KatalyzeQueryBus) RegisterHandler(messageName string, handler types.QueryHandler, factory types.QueryFactory) error {
+	if err := b.registerConsumerIfNotExists(messageName); err != nil {
+		return err
+	}
+	consumer, ok := b.consumers.Load(messageName)
+	if !ok {
+		return errors.New("consumer no encontrado")
+	}
+	var responseFunc kTypes.ResponseHandler = func(message kTypes.Message) (interface{}, error) {
+		query := factory()
+		if err := json.Unmarshal(message.Value(), query); err != nil {
+			return nil, err
+		}
+		return handler.Handle(query)
+	}
+	consumer.Subscribe(responseFunc)
+	return nil
+}
+
+func (b *KatalyzeQueryBus) Close() error {
+	b.cancelFunc()
+	b.client.Close()
+	return nil
+}
+</file>
+
+<file path="go.mod">
+module github.com/Angeldadro/Qraxis
+
+go 1.24.2
+
+require github.com/Angeldadro/Katalyze v1.6.0
+
+require (
+	github.com/confluentinc/confluent-kafka-go/v2 v2.10.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
+)
+</file>
+
+<file path="src/katalyze_impl/command_bus.go">
+// Archivo: Qraxis/src/katalyze_impl/command_bus.go
+package katalyze_impl
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	admin_builder "github.com/Angeldadro/Katalyze/src/builders/admin"
+	client_builder "github.com/Angeldadro/Katalyze/src/builders/client"
+	consumer_builder "github.com/Angeldadro/Katalyze/src/builders/consumer"
+	producer_builder "github.com/Angeldadro/Katalyze/src/builders/producer"
+	"github.com/Angeldadro/Katalyze/src/client"
+	producer_helper "github.com/Angeldadro/Katalyze/src/helpers/producer"
+	kTypes "github.com/Angeldadro/Katalyze/src/types"
+	"github.com/Angeldadro/Qraxis/src/types"
+	"github.com/Angeldadro/Qraxis/src/utils"
+)
+
 type GenericCommand struct {
 	messageName string
 	data        map[string]interface{}
 }
 
-func (c *GenericCommand) MessageName() string {
-	return c.messageName
-}
-
-func (c *GenericCommand) Type() types.MessageType {
-	return types.CommandMessageType
-}
-
-func (c *GenericCommand) Payload() interface{} {
-	return c.data
-}
-
-func (c *GenericCommand) Validate() error {
-	return nil // Implementación simple que siempre valida
-}
-
-// NewGenericCommand crea una nueva instancia de GenericCommand
+func (c *GenericCommand) MessageName() string          { return c.messageName }
+func (c *GenericCommand) Type() types.MessageType      { return types.CommandMessageType }
+func (c *GenericCommand) Payload() interface{}         { return c.data }
+func (c *GenericCommand) Validate() error              { return nil }
 func NewGenericCommand(messageName string, data map[string]interface{}) *GenericCommand {
-	return &GenericCommand{
-		messageName: messageName,
-		data:        data,
-	}
+	return &GenericCommand{messageName: messageName, data: data}
 }
 
 type KatalyzeCommandBusConfig struct {
 	BootstrapServers  string
 	ClientID          string
 	ResponseTimeoutMs int
+	ProducerConfig    map[string]interface{} // <-- AÑADIDO
 }
 
-// KatalyzeCommandBus implementa un único CommandBus que maneja todos los comandos
 type KatalyzeCommandBus struct {
 	client           *client.Client
 	bootstrapServers string
@@ -1233,41 +1213,33 @@ type KatalyzeCommandBus struct {
 	consumers        utils.TypedSyncMap[string, kTypes.ResponseConsumer]
 	ctx              context.Context
 	cancelFunc       context.CancelFunc
+	producerConfig   map[string]interface{} // <-- AÑADIDO
 }
 
-// NewCommandBus crea una nueva instancia del bus de comandos unificado
 func NewCommandBus(config KatalyzeCommandBusConfig) (*KatalyzeCommandBus, error) {
 	if config.BootstrapServers == "" {
 		return nil, errors.New("se requieren servidores bootstrap")
 	}
-
 	if config.ClientID == "" {
 		return nil, errors.New("se requiere un ID de cliente")
 	}
-
 	if config.ResponseTimeoutMs <= 0 {
-		config.ResponseTimeoutMs = 5000 // Timeout predeterminado: 5 segundos
+		config.ResponseTimeoutMs = 5000
 	}
-
 	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
 		SetClientId(config.ClientID).
 		Build()
-
 	if err != nil {
 		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
 	}
-
 	client, err := client_builder.NewClientBuilder().
 		SetClientId(config.ClientID).
 		SetAdminClient(adminClient).
 		Build()
-
 	if err != nil {
 		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
 	}
-
 	ctx, cancelFunc := context.WithCancel(context.Background())
-
 	return &KatalyzeCommandBus{
 		client:           client,
 		bootstrapServers: config.BootstrapServers,
@@ -1275,6 +1247,7 @@ func NewCommandBus(config KatalyzeCommandBusConfig) (*KatalyzeCommandBus, error)
 		consumers:        *utils.NewTypedSyncMap[string, kTypes.ResponseConsumer](),
 		ctx:              ctx,
 		cancelFunc:       cancelFunc,
+		producerConfig:   config.ProducerConfig, // <-- AÑADIDO
 	}, nil
 }
 
@@ -1282,20 +1255,14 @@ func (b *KatalyzeCommandBus) Dispatch(command types.Command) error {
 	if err := b.registerProducerIfNotExists(command.MessageName()); err != nil {
 		return err
 	}
-
-	// Obtener el productor
 	producer, ok := b.producers.Load(command.MessageName())
 	if !ok {
 		return errors.New("producer no encontrado")
 	}
-
-	// Serializar el comando a JSON
 	marshaledCommand, err := json.Marshal(command)
 	if err != nil {
 		return fmt.Errorf("error de serialización: %w", err)
 	}
-
-	// Usar el timeout por defecto
 	timeoutMs := 5000
 	res, err := producer.Produce(command.MessageName(), []byte(""), marshaledCommand, timeoutMs)
 	if err != nil {
@@ -1304,7 +1271,6 @@ func (b *KatalyzeCommandBus) Dispatch(command types.Command) error {
 	if res == nil {
 		return errors.New("no se recibió respuesta del comando")
 	}
-
 	return nil
 }
 
@@ -1312,8 +1278,15 @@ func (b *KatalyzeCommandBus) registerProducerIfNotExists(messageName string) err
 	if _, exists := b.producers.Load(messageName); exists {
 		return nil
 	}
-	producer, err := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName).
-		Build()
+	// --- INICIO DE MODIFICACIÓN ---
+	builder := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName)
+	if b.producerConfig != nil {
+		for key, value := range b.producerConfig {
+			builder.SetConfig(key, value)
+		}
+	}
+	producer, err := builder.Build()
+	// --- FIN DE MODIFICACIÓN ---
 	if err != nil {
 		return err
 	}
@@ -1351,7 +1324,6 @@ func (b *KatalyzeCommandBus) RegisterHandler(messageName string, handler types.C
 	if !ok {
 		return errors.New("consumer no encontrado")
 	}
-
 	var responseFunc kTypes.ResponseHandler = func(message kTypes.Message) (interface{}, error) {
 		command := factory()
 		if err := json.Unmarshal(message.Value(), command); err != nil {
@@ -1364,204 +1336,6 @@ func (b *KatalyzeCommandBus) RegisterHandler(messageName string, handler types.C
 }
 
 func (b *KatalyzeCommandBus) Close() error {
-	b.cancelFunc()
-	b.client.Close()
-	return nil
-}
-</file>
-
-<file path="src/katalyze_impl/event_bus.go">
-package katalyze_impl
-
-import (
-	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
-
-	admin_builder "github.com/Angeldadro/Katalyze/src/builders/admin"
-	client_builder "github.com/Angeldadro/Katalyze/src/builders/client"
-	consumer_builder "github.com/Angeldadro/Katalyze/src/builders/consumer"
-	"github.com/Angeldadro/Katalyze/src/client"
-	producer_helper "github.com/Angeldadro/Katalyze/src/helpers/producer"
-	kTypes "github.com/Angeldadro/Katalyze/src/types"
-	"github.com/Angeldadro/Qraxis/src/types"
-	"github.com/Angeldadro/Qraxis/src/utils"
-)
-
-type KatalyzeEventBusConfig struct {
-	BootstrapServers string
-	ClientID         string
-	MaxRetries       int
-	RetryInterval    int
-}
-
-// KatalyzeEventBus implementa un único EventBus que maneja todos los eventos
-type KatalyzeEventBus struct {
-	client           *client.Client
-	bootstrapServers string
-	clientID         string
-	producers        utils.TypedSyncMap[string, kTypes.SingleProducer]
-	// Mapa anidado: messageName -> (action -> consumer)
-	consumers     utils.TypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]]
-	maxRetries    int
-	retryInterval int
-	ctx           context.Context
-	cancelFunc    context.CancelFunc
-}
-
-// NewEventBus crea una nueva instancia del bus de eventos unificado
-func NewEventBus(config KatalyzeEventBusConfig) (*KatalyzeEventBus, error) {
-	if config.BootstrapServers == "" {
-		return nil, errors.New("se requieren servidores bootstrap")
-	}
-
-	if config.ClientID == "" {
-		return nil, errors.New("se requiere un ID de cliente")
-	}
-
-	if config.MaxRetries <= 0 {
-		config.MaxRetries = 3
-	}
-
-	if config.RetryInterval <= 0 {
-		config.RetryInterval = 5000
-	}
-
-	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
-		SetClientId(config.ClientID).
-		Build()
-
-	if err != nil {
-		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
-	}
-
-	client, err := client_builder.NewClientBuilder().
-		SetClientId(config.ClientID).
-		SetAdminClient(adminClient).
-		Build()
-
-	if err != nil {
-		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
-	}
-
-	ctx, cancelFunc := context.WithCancel(context.Background())
-
-	return &KatalyzeEventBus{
-		client:           client,
-		bootstrapServers: config.BootstrapServers,
-		clientID:         config.ClientID,
-		producers:        *utils.NewTypedSyncMap[string, kTypes.SingleProducer](),
-		consumers:        *utils.NewTypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]](),
-		maxRetries:       config.MaxRetries,
-		retryInterval:    config.RetryInterval,
-		ctx:              ctx,
-		cancelFunc:       cancelFunc,
-	}, nil
-}
-
-func (b *KatalyzeEventBus) Publish(event types.Event) error {
-	if err := b.registerProducerIfNotExists(event.MessageName()); err != nil {
-		return err
-	}
-	producer, ok := b.producers.Load(event.MessageName())
-	if !ok {
-		return errors.New("producer no encontrado")
-	}
-
-	marshaledEvent, err := json.Marshal(event)
-	if err != nil {
-		return fmt.Errorf("error de serialización: %w", err)
-	}
-
-	return producer.Produce(event.MessageName(), "", marshaledEvent)
-}
-
-func (b *KatalyzeEventBus) registerProducerIfNotExists(messageName string) error {
-	if _, exists := b.producers.Load(messageName); exists {
-		return nil
-	}
-	producer, err := producer_helper.CreateProducer(b.bootstrapServers, messageName)
-	if err != nil {
-		return err
-	}
-	if err := b.client.RegisterProducer(producer); err != nil {
-		return err
-	}
-	b.producers.Store(messageName, producer)
-	return nil
-}
-
-func (b *KatalyzeEventBus) registerConsumerIfNotExists(messageName string, action string) error {
-	// Obtener el mapa interno para este messageName o crear uno nuevo si no existe
-	actionMap, exists := b.consumers.Load(messageName)
-	if !exists {
-		actionMap = utils.NewTypedSyncMap[string, kTypes.RetryConsumer]()
-		b.consumers.Store(messageName, actionMap)
-	}
-
-	// Verificar si ya existe un consumer para esta acción
-	if _, exists := actionMap.Load(action); exists {
-		return nil
-	}
-
-	// Crear un nuevo productor para retry
-	producer, err := producer_helper.CreateRetryProducer(b.bootstrapServers, b.clientID)
-	if err != nil {
-		return err
-	}
-
-	// Crear un nuevo consumer
-	consumerBuilder := consumer_builder.NewRetryConsumerBuilder(b.bootstrapServers, []string{messageName}, action, b.maxRetries)
-	consumerBuilder.SetMaxRetries(b.maxRetries)
-	consumerBuilder.SetProducer(producer)
-	consumerBuilder.SetRetryInterval(b.retryInterval)
-	consumer, err := consumerBuilder.Build()
-	if err != nil {
-		return err
-	}
-
-	// Registrar el consumer en el cliente
-	if err := b.client.RegisterConsumer(consumer); err != nil {
-		return err
-	}
-
-	// Almacenar el consumer en el mapa interno
-	actionMap.Store(action, consumer)
-	return nil
-}
-
-func (b *KatalyzeEventBus) Subscribe(messageName string, action string, handler types.EventHandler, factory types.EventFactory) error {
-	// Registrar el consumer si no existe
-	if err := b.registerConsumerIfNotExists(messageName, action); err != nil {
-		return err
-	}
-
-	// Obtener el mapa de acciones para este messageName
-	actionMap, ok := b.consumers.Load(messageName)
-	if !ok {
-		return errors.New("mapa de acciones no encontrado para el mensaje")
-	}
-
-	// Obtener el consumer para esta acción específica
-	consumer, ok := actionMap.Load(action)
-	if !ok {
-		return errors.New("consumer no encontrado para la acción")
-	}
-
-	// Suscribir el handler al consumer
-	consumer.Subscribe(func(msg kTypes.Message) error {
-		event := factory()
-		if err := json.Unmarshal(msg.Value(), event); err != nil {
-			return err
-		}
-		return handler.Handle(event)
-	})
-
-	return nil
-}
-
-func (b *KatalyzeEventBus) Close() error {
 	b.cancelFunc()
 	b.client.Close()
 	return nil
@@ -1586,6 +1360,229 @@ type CommandBus interface {
 	Dispatch(command Command) error
 	RegisterHandler(messageName string, handler CommandHandler, factory CommandFactory) error
 	Close() error
+}
+</file>
+
+<file path="src/katalyze_impl/event_bus.go">
+// Archivo: Qraxis/src/katalyze_impl/event_bus.go
+package katalyze_impl
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	admin_builder "github.com/Angeldadro/Katalyze/src/builders/admin"
+	client_builder "github.com/Angeldadro/Katalyze/src/builders/client"
+	consumer_builder "github.com/Angeldadro/Katalyze/src/builders/consumer"
+	producer_builder "github.com/Angeldadro/Katalyze/src/builders/producer"
+	producer_types "github.com/Angeldadro/Katalyze/src/builders/producer/types"
+	"github.com/Angeldadro/Katalyze/src/client"
+	kTypes "github.com/Angeldadro/Katalyze/src/types"
+	"github.com/Angeldadro/Qraxis/src/types"
+	"github.com/Angeldadro/Qraxis/src/utils"
+)
+
+type KatalyzeEventBusConfig struct {
+	BootstrapServers string
+	ClientID         string
+	MaxRetries       int
+	RetryInterval    int
+	ProducerConfig   map[string]interface{} // <-- AÑADIDO
+}
+
+type KatalyzeEventBus struct {
+	client           *client.Client
+	bootstrapServers string
+	clientID         string
+	producers        utils.TypedSyncMap[string, kTypes.SingleProducer]
+	consumers        utils.TypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]]
+	maxRetries       int
+	retryInterval    int
+	ctx              context.Context
+	cancelFunc       context.CancelFunc
+	producerConfig   map[string]interface{} // <-- AÑADIDO
+}
+
+func NewEventBus(config KatalyzeEventBusConfig) (*KatalyzeEventBus, error) {
+	if config.BootstrapServers == "" {
+		return nil, errors.New("se requieren servidores bootstrap")
+	}
+	if config.ClientID == "" {
+		return nil, errors.New("se requiere un ID de cliente")
+	}
+	if config.MaxRetries <= 0 {
+		config.MaxRetries = 3
+	}
+	if config.RetryInterval <= 0 {
+		config.RetryInterval = 5000
+	}
+	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
+		SetClientId(config.ClientID).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
+	}
+	client, err := client_builder.NewClientBuilder().
+		SetClientId(config.ClientID).
+		SetAdminClient(adminClient).
+		Build()
+	if err != nil {
+		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
+	}
+	ctx, cancelFunc := context.WithCancel(context.Background())
+	return &KatalyzeEventBus{
+		client:           client,
+		bootstrapServers: config.BootstrapServers,
+		clientID:         config.ClientID,
+		producers:        *utils.NewTypedSyncMap[string, kTypes.SingleProducer](),
+		consumers:        *utils.NewTypedSyncMap[string, *utils.TypedSyncMap[string, kTypes.RetryConsumer]](),
+		maxRetries:       config.MaxRetries,
+		retryInterval:    config.RetryInterval,
+		ctx:              ctx,
+		cancelFunc:       cancelFunc,
+		producerConfig:   config.ProducerConfig, // <-- AÑADIDO
+	}, nil
+}
+
+func (b *KatalyzeEventBus) Publish(event types.Event) error {
+	if err := b.registerProducerIfNotExists(event.MessageName()); err != nil {
+		return err
+	}
+	producer, ok := b.producers.Load(event.MessageName())
+	if !ok {
+		return errors.New("producer no encontrado")
+	}
+	marshaledEvent, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("error de serialización: %w", err)
+	}
+	return producer.Produce(event.MessageName(), "", marshaledEvent)
+}
+
+func (b *KatalyzeEventBus) registerProducerIfNotExists(messageName string) error {
+	if _, exists := b.producers.Load(messageName); exists {
+		return nil
+	}
+
+	// --- INICIO DE MODIFICACIÓN ---
+	// Se reemplaza el helper por el builder para poder aplicar configuración personalizada.
+	builder := producer_builder.NewSingleProducerBuilder(messageName, b.bootstrapServers)
+	builder.SetClientId(b.clientID)
+
+	if b.producerConfig != nil {
+		// Aplicamos la configuración del preset de retry por defecto
+		builder.SetAcks(producer_types.AcksAll)
+		builder.SetCompressionType(producer_types.CompressionTypeSnappy)
+		builder.SetMaxInFlightRequestsPerConnection(5)
+		builder.SetLingerMs(10)
+
+		// Sobrescribimos con la configuración del usuario
+		for key, value := range b.producerConfig {
+			switch key {
+			case "enable.idempotence":
+				if v, ok := value.(bool); ok {
+					builder.SetEnableIdempotence(v)
+				}
+			}
+		}
+	}
+
+	producer, err := builder.Build()
+	// --- FIN DE MODIFICACIÓN ---
+
+	if err != nil {
+		return err
+	}
+	if err := b.client.RegisterProducer(producer); err != nil {
+		return err
+	}
+	b.producers.Store(messageName, producer)
+	return nil
+}
+
+func (b *KatalyzeEventBus) registerConsumerIfNotExists(messageName string, action string) error {
+	actionMap, exists := b.consumers.Load(messageName)
+	if !exists {
+		actionMap = utils.NewTypedSyncMap[string, kTypes.RetryConsumer]()
+		b.consumers.Store(messageName, actionMap)
+	}
+	if _, exists := actionMap.Load(action); exists {
+		return nil
+	}
+
+	// --- INICIO DE MODIFICACIÓN ---
+	// Crear un productor para reintentos usando el builder para aplicar configuración
+	retryProducerName := fmt.Sprintf("%s-retry-producer", action)
+	retryProducerBuilder := producer_builder.NewSingleProducerBuilder(retryProducerName, b.bootstrapServers)
+	retryProducerBuilder.SetClientId(b.clientID)
+
+	// Aplicamos configuración de reintentos por defecto
+	retryProducerBuilder.SetAcks(producer_types.AcksAll)
+	retryProducerBuilder.SetCompressionType(producer_types.CompressionTypeSnappy)
+	retryProducerBuilder.SetEnableIdempotence(true)
+	retryProducerBuilder.SetMaxInFlightRequestsPerConnection(5)
+	retryProducerBuilder.SetLingerMs(10)
+
+	// Sobrescribimos con la configuración del usuario
+	if b.producerConfig != nil {
+		for key, value := range b.producerConfig {
+			switch key {
+			case "enable.idempotence":
+				if v, ok := value.(bool); ok {
+					retryProducerBuilder.SetEnableIdempotence(v)
+				}
+			}
+		}
+	}
+	producer, err := retryProducerBuilder.Build()
+	// --- FIN DE MODIFICACIÓN ---
+	if err != nil {
+		return err
+	}
+
+	consumerBuilder := consumer_builder.NewRetryConsumerBuilder(b.bootstrapServers, []string{messageName}, action, b.maxRetries)
+	consumerBuilder.SetMaxRetries(b.maxRetries)
+	consumerBuilder.SetProducer(producer)
+	consumerBuilder.SetRetryInterval(b.retryInterval)
+	consumer, err := consumerBuilder.Build()
+	if err != nil {
+		return err
+	}
+	if err := b.client.RegisterConsumer(consumer); err != nil {
+		return err
+	}
+	actionMap.Store(action, consumer)
+	return nil
+}
+
+func (b *KatalyzeEventBus) Subscribe(messageName string, action string, handler types.EventHandler, factory types.EventFactory) error {
+	if err := b.registerConsumerIfNotExists(messageName, action); err != nil {
+		return err
+	}
+	actionMap, ok := b.consumers.Load(messageName)
+	if !ok {
+		return errors.New("mapa de acciones no encontrado para el mensaje")
+	}
+	consumer, ok := actionMap.Load(action)
+	if !ok {
+		return errors.New("consumer no encontrado para la acción")
+	}
+	consumer.Subscribe(func(msg kTypes.Message) error {
+		event := factory()
+		if err := json.Unmarshal(msg.Value(), event); err != nil {
+			return err
+		}
+		return handler.Handle(event)
+	})
+	return nil
+}
+
+func (b *KatalyzeEventBus) Close() error {
+	b.cancelFunc()
+	b.client.Close()
+	return nil
 }
 </file>
 

@@ -1,4 +1,3 @@
-// Archivo: Qraxis/src/katalyze_impl/query_bus.go
 package katalyze_impl
 
 import (
@@ -6,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"sync"
+	"time"
 
 	admin_builder "github.com/Angeldadro/Katalyze/src/builders/admin"
 	client_builder "github.com/Angeldadro/Katalyze/src/builders/client"
@@ -22,7 +24,6 @@ type KatalyzeQueryBusConfig struct {
 	BootstrapServers  string
 	ClientID          string
 	ResponseTimeoutMs int
-	ProducerConfig    map[string]interface{} // <-- AÑADIDO
 }
 
 type KatalyzeQueryBus struct {
@@ -32,7 +33,6 @@ type KatalyzeQueryBus struct {
 	consumers        utils.TypedSyncMap[string, kTypes.ResponseConsumer]
 	ctx              context.Context
 	cancelFunc       context.CancelFunc
-	producerConfig   map[string]interface{} // <-- AÑADIDO
 }
 
 func NewQueryBus(config KatalyzeQueryBusConfig) (*KatalyzeQueryBus, error) {
@@ -45,12 +45,14 @@ func NewQueryBus(config KatalyzeQueryBusConfig) (*KatalyzeQueryBus, error) {
 	if config.ResponseTimeoutMs <= 0 {
 		config.ResponseTimeoutMs = 5000
 	}
+
 	adminClient, err := admin_builder.NewKafkaAdminClientBuilder(config.BootstrapServers).
 		SetClientId(config.ClientID).
 		Build()
 	if err != nil {
 		return nil, fmt.Errorf("error al crear cliente admin Katalyze: %w", err)
 	}
+
 	client, err := client_builder.NewClientBuilder().
 		SetClientId(config.ClientID).
 		SetAdminClient(adminClient).
@@ -58,7 +60,9 @@ func NewQueryBus(config KatalyzeQueryBusConfig) (*KatalyzeQueryBus, error) {
 	if err != nil {
 		return nil, fmt.Errorf("error al crear cliente Katalyze: %w", err)
 	}
+
 	ctx, cancelFunc := context.WithCancel(context.Background())
+
 	return &KatalyzeQueryBus{
 		client:           client,
 		bootstrapServers: config.BootstrapServers,
@@ -66,7 +70,6 @@ func NewQueryBus(config KatalyzeQueryBusConfig) (*KatalyzeQueryBus, error) {
 		consumers:        *utils.NewTypedSyncMap[string, kTypes.ResponseConsumer](),
 		ctx:              ctx,
 		cancelFunc:       cancelFunc,
-		producerConfig:   config.ProducerConfig, // <-- AÑADIDO
 	}, nil
 }
 
@@ -78,6 +81,7 @@ func (b *KatalyzeQueryBus) Dispatch(query types.Query, timeoutMs int) (types.Que
 	if !ok {
 		return nil, errors.New("producer no encontrado")
 	}
+
 	marshaledQuery, err := json.Marshal(query)
 	if err != nil {
 		return nil, fmt.Errorf("error de serialización: %w", err)
@@ -90,6 +94,7 @@ func (b *KatalyzeQueryBus) Dispatch(query types.Query, timeoutMs int) (types.Que
 	if err := json.Unmarshal(res, &remarshaledQuery); err != nil {
 		return nil, fmt.Errorf("error al deserializar consulta: %w", err)
 	}
+
 	return remarshaledQuery, nil
 }
 
@@ -97,15 +102,8 @@ func (b *KatalyzeQueryBus) registerProducerIfNotExists(messageName string) error
 	if _, exists := b.producers.Load(messageName); exists {
 		return nil
 	}
-	// --- INICIO DE MODIFICACIÓN ---
-	builder := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName)
-	if b.producerConfig != nil {
-		for key, value := range b.producerConfig {
-			builder.SetConfig(key, value)
-		}
-	}
-	producer, err := builder.Build()
-	// --- FIN DE MODIFICACIÓN ---
+	producer, err := producer_builder.NewResponseProducerBuilder(b.bootstrapServers, messageName).
+		Build()
 	if err != nil {
 		return err
 	}
@@ -153,6 +151,27 @@ func (b *KatalyzeQueryBus) RegisterHandler(messageName string, handler types.Que
 	consumer.Subscribe(responseFunc)
 	return nil
 }
+
+// --- MÉTODO AÑADIDO ---
+func (b *KatalyzeQueryBus) WarmUp(queryNames []string) {
+	log.Println("[Qraxis] Iniciando calentamiento del QueryBus...")
+	start := time.Now()
+	var wg sync.WaitGroup
+
+	for _, name := range queryNames {
+		wg.Add(1)
+		go func(queryName string) {
+			defer wg.Done()
+			log.Printf("[Qraxis WarmUp] Forzando inicialización del productor para la consulta '%s'...", queryName)
+			_ = b.registerProducerIfNotExists(queryName)
+		}(name)
+	}
+
+	wg.Wait()
+	log.Printf("[Qraxis] Calentamiento del QueryBus completado en %v.", time.Since(start))
+}
+
+// --- FIN DEL MÉTODO AÑADIDO ---
 
 func (b *KatalyzeQueryBus) Close() error {
 	b.cancelFunc()
